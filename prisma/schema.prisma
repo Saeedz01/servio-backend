@@ -1,0 +1,129 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum RoleStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ServiceStatus {
+  DRAFT
+  PUBLISHED
+  SUSPENDED
+}
+
+enum PriceUnit {
+  PROJECT
+  HOUR
+  FLAT
+}
+
+model Role {
+  id        String     @id @default(uuid())
+  roleName  String     @unique @map("role_name")
+  status    RoleStatus @default(ACTIVE)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id        String        @id @default(uuid())
+  name      String
+  password  String
+  roleId    String        @map("role_id")
+  status    AccountStatus @default(ACTIVE)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  role     Role      @relation(fields: [roleId], references: [id])
+  admin    Admin?
+  seeker   Seeker?
+  provider Provider?
+
+  @@index([roleId])
+  @@index([status])
+  @@map("users")
+}
+
+model Admin {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  email     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("admins")
+}
+
+model Seeker {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  email     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("seekers")
+}
+
+model Provider {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  phone       String   @unique
+  idCardFront String   @map("id_card_front")
+  idCardBack  String   @map("id_card_back")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  services Service[]
+
+  @@map("providers")
+}
+
+model Service {
+  id           String        @id @default(uuid())
+  providerId   String        @map("provider_id")
+  categoryId   String        @map("category_id")
+  title        String
+  description  String
+  imageUrl     String        @map("image_url")
+  address      String
+  lat          Float
+  lng          Float
+  radiusKm     Float         @map("radius_km")
+  priceAmount  Float         @map("price_amount")
+  priceUnit    PriceUnit     @map("price_unit")
+  availability Json
+  status       ServiceStatus @default(DRAFT)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+  @@index([status])
+  @@index([categoryId])
+  @@map("services")
+}
