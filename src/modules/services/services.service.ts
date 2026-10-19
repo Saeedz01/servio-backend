@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -39,18 +40,62 @@ export type ServiceResponse = {
   providerName?: string;
 };
 
+export type ServiceCategoryResponse = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  isActive: boolean;
+};
+
 @Injectable()
 export class ServicesService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findActiveCategories(
+    search?: string,
+  ): Promise<ServiceCategoryResponse[]> {
+    const query = search?.trim();
+    const categories = await this.prisma.serviceCategory.findMany({
+      where: {
+        isActive: true,
+        ...(query
+          ? {
+              OR: [
+                { name: { contains: query, mode: 'insensitive' } },
+                { slug: { contains: query, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        isActive: true,
+      },
+    });
+
+    // Keep "Other Services" pinned at the bottom of the list.
+    return categories.sort((a, b) => {
+      const aOther = a.slug === 'other-services' ? 1 : 0;
+      const bOther = b.slug === 'other-services' ? 1 : 0;
+      if (aOther !== bOther) return aOther - bOther;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
   async create(userId: string, dto: CreateServiceDto): Promise<ServiceResponse> {
     const provider = await this.requireProvider(userId);
     const status = this.resolveCreateStatus(provider.user.status, dto.status);
+    const categoryId = await this.requireActiveCategoryId(dto.categoryId);
 
     const service = await this.prisma.service.create({
       data: {
         providerId: provider.id,
-        categoryId: dto.categoryId.trim(),
+        categoryId,
         title: dto.title.trim(),
         description: dto.description.trim(),
         imageUrl: dto.imageUrl,
@@ -122,12 +167,15 @@ export class ServicesService {
       );
     }
 
+    const categoryId =
+      dto.categoryId !== undefined
+        ? await this.requireActiveCategoryId(dto.categoryId)
+        : undefined;
+
     const service = await this.prisma.service.update({
       where: { id },
       data: {
-        ...(dto.categoryId !== undefined
-          ? { categoryId: dto.categoryId.trim() }
-          : {}),
+        ...(categoryId !== undefined ? { categoryId } : {}),
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
         ...(dto.description !== undefined
           ? { description: dto.description.trim() }
@@ -178,6 +226,18 @@ export class ServicesService {
       throw new UnauthorizedException('Provider profile not found.');
     }
     return provider;
+  }
+
+  private async requireActiveCategoryId(rawCategoryId: string) {
+    const categoryId = rawCategoryId.trim();
+    const category = await this.prisma.serviceCategory.findFirst({
+      where: { id: categoryId, isActive: true },
+      select: { id: true },
+    });
+    if (!category) {
+      throw new BadRequestException('Select a valid service category.');
+    }
+    return category.id;
   }
 
   private resolveCreateStatus(

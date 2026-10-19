@@ -1,8 +1,9 @@
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, MinLength } from 'class-validator';
 
 export class AdminLoginDto {
-  @IsEmail()
-  email!: string;
+  @IsString()
+  @IsNotEmpty()
+  phone!: string;
 
   @IsString()
   @MinLength(1)
@@ -10,8 +11,9 @@ export class AdminLoginDto {
 }
 
 export class SeekerLoginDto {
-  @IsEmail()
-  email!: string;
+  @IsString()
+  @IsNotEmpty()
+  phone!: string;
 
   @IsString()
   @MinLength(1)

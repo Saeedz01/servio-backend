@@ -21,7 +21,8 @@ const weekend = [
 ];
 
 export type SeedService = {
-  categoryId: string;
+  /** Canonical ServiceCategory.slug */
+  categorySlug: string;
   title: string;
   description: string;
   imageUrl: string;
@@ -38,7 +39,7 @@ export type SeedService = {
 /** Former localStorage demo + catalog services for the verified demo provider. */
 export const DEMO_PROVIDER_SERVICES: SeedService[] = [
   {
-    categoryId: 'assembly',
+    categorySlug: 'home-repair-maintenance',
     title: 'Premium Furniture Assembly',
     description:
       'Professional assembly for beds, desks, wardrobes, and shelving units.',
@@ -54,7 +55,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'moving',
+    categorySlug: 'moving-packers',
     title: 'Same-Day Moving Help',
     description: 'Two-person crew for apartments and small homes.',
     imageUrl:
@@ -69,7 +70,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'cleaning',
+    categorySlug: 'cleaning-pest-control',
     title: 'Evening Home Cleaning',
     description: 'Kitchen, bathrooms, and living areas after work hours.',
     imageUrl:
@@ -84,7 +85,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.DRAFT,
   },
   {
-    categoryId: 'outdoor',
+    categorySlug: 'gardening-landscaping',
     title: 'Weekend Lawn Care',
     description: 'Mowing, edging, and basic yard cleanup.',
     imageUrl:
@@ -99,7 +100,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.SUSPENDED,
   },
   {
-    categoryId: 'assembly',
+    categorySlug: 'home-repair-maintenance',
     title: 'Furniture Assembly',
     description: 'Book trusted help for furniture assembly.',
     imageUrl:
@@ -114,7 +115,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'assembly',
+    categorySlug: 'home-repair-maintenance',
     title: 'IKEA Assembly',
     description: 'Book trusted help for ikea assembly.',
     imageUrl: '/services/ikea-assembly.jpg',
@@ -128,7 +129,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'assembly',
+    categorySlug: 'home-repair-maintenance',
     title: 'Desk Assembly',
     description: 'Book trusted help for desk assembly.',
     imageUrl:
@@ -143,7 +144,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'assembly',
+    categorySlug: 'home-repair-maintenance',
     title: 'Bookshelf Assembly',
     description: 'Book trusted help for bookshelf assembly.',
     imageUrl:
@@ -158,7 +159,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'moving',
+    categorySlug: 'moving-packers',
     title: 'Help Moving',
     description: 'Book trusted help for help moving.',
     imageUrl:
@@ -173,7 +174,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'cleaning',
+    categorySlug: 'cleaning-pest-control',
     title: 'Home & Apartment Cleaning',
     description: 'Book trusted help for home & apartment cleaning.',
     imageUrl:
@@ -188,7 +189,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'outdoor',
+    categorySlug: 'gardening-landscaping',
     title: 'Lawn Care',
     description: 'Book trusted help for lawn care.',
     imageUrl:
@@ -203,7 +204,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'repairs',
+    categorySlug: 'plumbing-water-services',
     title: 'Minor Plumbing Repairs',
     description: 'Book trusted help for minor plumbing repairs.',
     imageUrl:
@@ -218,7 +219,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'painting',
+    categorySlug: 'construction-renovation',
     title: 'Interior Painting',
     description: 'Book trusted help for interior painting.',
     imageUrl:
@@ -233,7 +234,7 @@ export const DEMO_PROVIDER_SERVICES: SeedService[] = [
     status: ServiceStatus.PUBLISHED,
   },
   {
-    categoryId: 'trending',
+    categorySlug: 'events-catering-decorations',
     title: 'Event Catering',
     description:
       'Buffet and plated catering for small gatherings, parties, and office events.',

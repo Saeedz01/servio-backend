@@ -6,10 +6,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import {
   AccountStatus,
-  type Admin,
   type Provider,
   type Role,
-  type Seeker,
   type User,
 } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
@@ -33,10 +31,9 @@ import {
 export type AuthUser = {
   id: string;
   name: string;
-  /** Role profile row id (admins/seekers/providers). */
+  /** Provider profile id when role is PROVIDER; otherwise null. */
   profileId: string | null;
-  email: string | null;
-  phone: string | null;
+  phone: string;
   role: AuthRoleLabel;
   status: AccountStatus;
 };
@@ -48,15 +45,11 @@ export type AuthResponse = {
 
 type UserWithRelations = User & {
   role: Role;
-  admin: Admin | null;
-  seeker: Seeker | null;
   provider: Provider | null;
 };
 
 const userInclude = {
   role: true,
-  admin: true,
-  seeker: true,
   provider: true,
 } as const;
 
@@ -68,60 +61,40 @@ export class AuthService {
   ) {}
 
   async adminSignup(dto: AdminSignupDto): Promise<AuthResponse> {
-    const email = this.normalizeEmail(dto.email);
-    await this.ensureEmailAvailable(email);
+    const phone = this.requirePhone(dto.phone);
+    await this.ensurePhoneAvailable(phone);
     const role = await this.requireRole(ROLE_NAMES.ADMIN);
 
-    const user = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.user.create({
-        data: {
-          name: dto.name.trim(),
-          password: await this.hashPassword(dto.password),
-          roleId: role.id,
-          status: AccountStatus.ACTIVE,
-          admin: {
-            create: { email },
-          },
-        },
-        include: userInclude,
-      });
-      return created;
+    const user = await this.prisma.user.create({
+      data: {
+        name: dto.name.trim(),
+        phone,
+        password: await this.hashPassword(dto.password),
+        roleId: role.id,
+        status: AccountStatus.ACTIVE,
+      },
+      include: userInclude,
     });
 
     return this.toAuthResponse(user);
   }
 
   async adminLogin(dto: AdminLoginDto): Promise<AuthResponse> {
-    const email = this.normalizeEmail(dto.email);
-    const admin = await this.prisma.admin.findUnique({
-      where: { email },
-      include: {
-        user: { include: userInclude },
-      },
-    });
-
-    if (!admin || admin.user.role.roleName !== ROLE_NAMES.ADMIN) {
-      throw new UnauthorizedException('Invalid credentials.');
-    }
-
-    await this.assertPassword(admin.user.password, dto.password);
-    return this.toAuthResponse(admin.user);
+    return this.loginByPhoneAndRole(dto.phone, dto.password, ROLE_NAMES.ADMIN);
   }
 
   async seekerSignup(dto: SeekerSignupDto): Promise<AuthResponse> {
-    const email = this.normalizeEmail(dto.email);
-    await this.ensureEmailAvailable(email);
+    const phone = this.requirePhone(dto.phone);
+    await this.ensurePhoneAvailable(phone);
     const role = await this.requireRole(ROLE_NAMES.SEEKER);
 
     const user = await this.prisma.user.create({
       data: {
         name: dto.name.trim(),
+        phone,
         password: await this.hashPassword(dto.password),
         roleId: role.id,
         status: AccountStatus.ACTIVE,
-        seeker: {
-          create: { email },
-        },
       },
       include: userInclude,
     });
@@ -130,44 +103,23 @@ export class AuthService {
   }
 
   async seekerLogin(dto: SeekerLoginDto): Promise<AuthResponse> {
-    const email = this.normalizeEmail(dto.email);
-    const seeker = await this.prisma.seeker.findUnique({
-      where: { email },
-      include: {
-        user: { include: userInclude },
-      },
-    });
-
-    if (!seeker || seeker.user.role.roleName !== ROLE_NAMES.SEEKER) {
-      throw new UnauthorizedException('Invalid credentials.');
-    }
-
-    await this.assertPassword(seeker.user.password, dto.password);
-    return this.toAuthResponse(seeker.user);
+    return this.loginByPhoneAndRole(dto.phone, dto.password, ROLE_NAMES.SEEKER);
   }
 
   async providerSignup(dto: ProviderSignupDto): Promise<AuthResponse> {
-    const phone = this.normalizePhone(dto.phone);
-    if (!phone) {
-      throw new ConflictException('Enter a valid phone number.');
-    }
-
-    const existing = await this.prisma.provider.findUnique({ where: { phone } });
-    if (existing) {
-      throw new ConflictException('An account with this phone already exists.');
-    }
-
+    const phone = this.requirePhone(dto.phone);
+    await this.ensurePhoneAvailable(phone);
     const role = await this.requireRole(ROLE_NAMES.PROVIDER);
 
     const user = await this.prisma.user.create({
       data: {
         name: dto.name.trim(),
+        phone,
         password: await this.hashPassword(dto.password),
         roleId: role.id,
         status: AccountStatus.PENDING,
         provider: {
           create: {
-            phone,
             idCardFront: dto.idFrontUrl,
             idCardBack: dto.idBackUrl,
           },
@@ -180,20 +132,33 @@ export class AuthService {
   }
 
   async providerLogin(dto: ProviderLoginDto): Promise<AuthResponse> {
-    const phone = this.normalizePhone(dto.phone);
-    const provider = await this.prisma.provider.findUnique({
-      where: { phone },
-      include: {
-        user: { include: userInclude },
+    return this.loginByPhoneAndRole(
+      dto.phone,
+      dto.password,
+      ROLE_NAMES.PROVIDER,
+    );
+  }
+
+  private async loginByPhoneAndRole(
+    rawPhone: string,
+    password: string,
+    roleName: string,
+  ): Promise<AuthResponse> {
+    const phone = this.normalizePhone(rawPhone);
+    const user = await this.prisma.user.findFirst({
+      where: {
+        phone,
+        role: { roleName },
       },
+      include: userInclude,
     });
 
-    if (!provider || provider.user.role.roleName !== ROLE_NAMES.PROVIDER) {
+    if (!user) {
       throw new UnauthorizedException('Invalid credentials.');
     }
 
-    await this.assertPassword(provider.user.password, dto.password);
-    return this.toAuthResponse(provider.user);
+    await this.assertPassword(user.password, password);
+    return this.toAuthResponse(user);
   }
 
   private async requireRole(roleName: string): Promise<Role> {
@@ -204,13 +169,18 @@ export class AuthService {
     return role;
   }
 
-  private async ensureEmailAvailable(email: string) {
-    const [admin, seeker] = await Promise.all([
-      this.prisma.admin.findUnique({ where: { email } }),
-      this.prisma.seeker.findUnique({ where: { email } }),
-    ]);
-    if (admin || seeker) {
-      throw new ConflictException('An account with this email already exists.');
+  private requirePhone(raw: string): string {
+    const phone = this.normalizePhone(raw);
+    if (!phone) {
+      throw new ConflictException('Enter a valid phone number.');
+    }
+    return phone;
+  }
+
+  private async ensurePhoneAvailable(phone: string) {
+    const existing = await this.prisma.user.findUnique({ where: { phone } });
+    if (existing) {
+      throw new ConflictException('An account with this phone already exists.');
     }
   }
 
@@ -230,16 +200,12 @@ export class AuthService {
 
   private toAuthResponse(user: UserWithRelations): AuthResponse {
     const role = toAuthRoleLabel(user.role.roleName);
-    const email = user.admin?.email ?? user.seeker?.email ?? null;
-    const phone = user.provider?.phone ?? null;
-    const profileId =
-      user.admin?.id ?? user.seeker?.id ?? user.provider?.id ?? null;
+    const profileId = user.provider?.id ?? null;
 
     const payload = {
       sub: user.id,
       role,
-      email,
-      phone,
+      phone: user.phone,
       profileId,
     };
 
@@ -249,16 +215,11 @@ export class AuthService {
         id: user.id,
         profileId,
         name: user.name,
-        email,
-        phone,
+        phone: user.phone,
         role,
         status: user.status,
       },
     };
-  }
-
-  private normalizeEmail(email: string) {
-    return email.trim().toLowerCase();
   }
 
   private normalizePhone(phone: string) {
