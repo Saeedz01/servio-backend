@@ -74,10 +74,12 @@ model User {
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
-  role     Role      @relation(fields: [roleId], references: [id])
-  provider Provider?
-  bookings Booking[]
-  jobs     Job[]
+  role                   Role            @relation(fields: [roleId], references: [id])
+  provider               Provider?
+  bookings               Booking[]
+  jobs                   Job[]
+  messageThreadsAsSeeker MessageThread[] @relation("SeekerMessageThreads")
+  messageThreadsAsAdmin  MessageThread[] @relation("AdminMessageThreads")
 
   @@index([roleId])
   @@index([status])
@@ -92,11 +94,12 @@ model Provider {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  services      Service[]
-  bookings      Booking[]
-  biddings      Bidding[]
-  notifications Notification[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  services       Service[]
+  bookings       Booking[]
+  biddings       Bidding[]
+  notifications  Notification[]
+  messageThreads MessageThread[]
 
   @@map("providers")
 }
@@ -163,9 +166,10 @@ model Booking {
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @updatedAt @map("updated_at")
 
-  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
-  seeker   User?    @relation(fields: [seekerId], references: [id], onDelete: SetNull)
+  service       Service        @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  provider      Provider       @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  seeker        User?          @relation(fields: [seekerId], references: [id], onDelete: SetNull)
+  messageThread MessageThread?
 
   @@index([providerId])
   @@index([seekerId])
@@ -238,4 +242,72 @@ model Notification {
   @@index([providerId])
   @@index([read])
   @@map("notifications")
+}
+
+enum MessageSenderRole {
+  SEEKER
+  PROVIDER
+  ADMIN
+}
+
+/**
+ * Conversation between a provider and either a seeker (booking/service)
+ * or an admin (service moderation). Exactly one of seekerId / adminId is set.
+ */
+model MessageThread {
+  id                 String    @id @default(uuid())
+  bookingId          String?   @unique @map("booking_id")
+  providerId         String    @map("provider_id")
+  seekerId           String?   @map("seeker_id")
+  adminId            String?   @map("admin_id")
+  serviceId          String?   @map("service_id")
+  serviceTitle       String    @default("") @map("service_title")
+  lastMessageAt      DateTime? @map("last_message_at")
+  lastMessagePreview String    @default("") @map("last_message_preview")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  booking    Booking?           @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  provider   Provider           @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  seeker     User?              @relation("SeekerMessageThreads", fields: [seekerId], references: [id], onDelete: Cascade)
+  admin      User?              @relation("AdminMessageThreads", fields: [adminId], references: [id], onDelete: Cascade)
+  messages   Message[]
+  readStates MessageReadState[]
+
+  @@index([providerId])
+  @@index([seekerId])
+  @@index([adminId])
+  @@index([serviceId])
+  @@index([lastMessageAt])
+  @@map("message_threads")
+}
+
+model Message {
+  id         String            @id @default(uuid())
+  threadId   String            @map("thread_id")
+  senderRole MessageSenderRole @map("sender_role")
+  /** Seeker user id or provider profile id, matching senderRole. */
+  senderId   String            @map("sender_id")
+  body       String
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model MessageReadState {
+  id              String            @id @default(uuid())
+  threadId        String            @map("thread_id")
+  participantRole MessageSenderRole @map("participant_role")
+  participantId   String            @map("participant_id")
+  lastReadAt      DateTime          @map("last_read_at")
+
+  thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, participantRole, participantId])
+  @@index([threadId])
+  @@map("message_read_states")
 }

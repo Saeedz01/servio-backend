@@ -18,6 +18,7 @@ import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guar
 import { BookingsService } from './bookings.service.js';
 import { CreateBookingDto } from './dto/create-booking.dto.js';
 import { GuestLookupDto } from './dto/guest-lookup.dto.js';
+import { MarkBookingsSeenDto } from './dto/mark-bookings-seen.dto.js';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto.js';
 import { WithdrawBookingDto } from './dto/withdraw-booking.dto.js';
 
@@ -55,6 +56,19 @@ export class BookingsController {
       throw new ForbiddenException('Only providers can list provider bookings.');
     }
     return this.bookingsService.findMineAsProvider(user.sub);
+  }
+
+  /** Provider opens Bookings list — clear “New” / unread for accepted bookings. */
+  @UseGuards(JwtAuthGuard)
+  @Post('provider/mark-seen')
+  markSeen(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: MarkBookingsSeenDto,
+  ) {
+    if (user.role !== 'PROVIDER') {
+      throw new ForbiddenException('Only providers can mark bookings seen.');
+    }
+    return this.bookingsService.markSeenAsProvider(user.sub, dto.bookingIds);
   }
 
   @UseGuards(JwtAuthGuard)

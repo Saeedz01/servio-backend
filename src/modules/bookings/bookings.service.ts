@@ -151,6 +151,54 @@ export class BookingsService {
     return rows.map((row) => this.toResponse(row));
   }
 
+  /**
+   * Marks accepted bookings as seen when the provider opens the Bookings list
+   * (or specific detail). Clears the Bookings-tab unread badge.
+   */
+  async markSeenAsProvider(
+    userId: string,
+    bookingIds?: string[],
+  ): Promise<{ updated: number }> {
+    const provider = await this.requireProvider(userId);
+    const ids = (bookingIds ?? [])
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    const where = {
+      providerId: provider.id,
+      providerViewedAt: null,
+      status: BookingStatus.ACCEPTED,
+      ...(ids.length > 0 ? { id: { in: ids } } : {}),
+    };
+
+    const toMark = await this.prisma.booking.findMany({
+      where,
+      select: { id: true },
+    });
+    if (toMark.length === 0) {
+      return { updated: 0 };
+    }
+
+    const now = new Date();
+    const result = await this.prisma.booking.updateMany({
+      where: { id: { in: toMark.map((row) => row.id) } },
+      data: { providerViewedAt: now },
+    });
+
+    await this.prisma.notification.updateMany({
+      where: {
+        providerId: provider.id,
+        read: false,
+        OR: toMark.map((row) => ({
+          href: `/provider/bookings/${row.id}`,
+        })),
+      },
+      data: { read: true },
+    });
+
+    return { updated: result.count };
+  }
+
   async findOne(id: string, user: JwtPayload): Promise<BookingResponse> {
     const booking = await this.prisma.booking.findUnique({
       where: { id },
