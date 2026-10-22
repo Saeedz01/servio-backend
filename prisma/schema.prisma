@@ -288,12 +288,22 @@ model Message {
   senderRole MessageSenderRole @map("sender_role")
   /** Seeker user id or provider profile id, matching senderRole. */
   senderId   String            @map("sender_id")
-  body       String
-  createdAt  DateTime          @default(now()) @map("created_at")
+  body       String            @default("")
+  /** [{ id, name, mimeType, sizeBytes, url }] — data URLs or http(s). */
+  attachments Json             @default("[]")
+  editedAt    DateTime?        @map("edited_at")
+  deletedAt   DateTime?        @map("deleted_at")
+  /** Peer client acknowledged receipt (1:1). */
+  deliveredAt DateTime?        @map("delivered_at")
+  /** Peer marked the thread read covering this message (1:1). */
+  readAt      DateTime?        @map("read_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
 
   thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@index([threadId])
+  @@index([threadId, createdAt])
   @@index([createdAt])
   @@map("messages")
 }

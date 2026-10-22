@@ -23,6 +23,11 @@ type JoinThreadPayload = AuthPayload & {
   threadId?: string;
 };
 
+type TypingPayload = AuthPayload & {
+  threadId?: string;
+  isTyping?: boolean;
+};
+
 type ActorRole = 'seeker' | 'provider' | 'admin';
 
 @WebSocketGateway({
@@ -48,11 +53,6 @@ export class MessagesGateway implements OnGatewayConnection {
     this.logger.debug(`Messages socket connected: ${client.id}`);
   }
 
-  /**
-   * Deliver once per participant via their user room only.
-   * Avoid also emitting to the thread room — clients in both rooms would
-   * receive duplicates and inflate unread counts.
-   */
   emitMessageCreated(
     thread: Pick<
       MessageThread,
@@ -60,22 +60,19 @@ export class MessagesGateway implements OnGatewayConnection {
     >,
     message: MessageDto,
   ) {
-    this.server
-      .to(this.userRoom('provider', thread.providerId))
-      .emit('message:created', message);
-    if (thread.seekerId) {
-      this.server
-        .to(this.userRoom('seeker', thread.seekerId))
-        .emit('message:created', message);
-    }
-    if (thread.adminId) {
-      this.server
-        .to(this.userRoom('admin', thread.adminId))
-        .emit('message:created', message);
-    }
+    this.emitToThreadParticipants(thread, 'message:created', message);
   }
 
-  /** Each participant gets a DTO with their own unreadCount / peer view. */
+  emitMessageUpdated(
+    thread: Pick<
+      MessageThread,
+      'id' | 'providerId' | 'seekerId' | 'adminId'
+    >,
+    message: MessageDto,
+  ) {
+    this.emitToThreadParticipants(thread, 'message:updated', message);
+  }
+
   emitThreadUpserted(payload: {
     provider: { id: string; dto: MessageThreadDto };
     seeker?: { id: string; dto: MessageThreadDto };
@@ -104,7 +101,6 @@ export class MessagesGateway implements OnGatewayConnection {
     seekerId?: string | null;
     adminId?: string | null;
   }) {
-    // Fan out to user rooms so inbox badges clear even if not in the thread room.
     if (payload.providerId) {
       this.server
         .to(this.userRoom('provider', payload.providerId))
@@ -155,13 +151,7 @@ export class MessagesGateway implements OnGatewayConnection {
     if (!thread) {
       return { ok: false, error: 'Thread not found.' };
     }
-    if (actor.role === 'provider' && thread.providerId !== actor.id) {
-      return { ok: false, error: 'Forbidden.' };
-    }
-    if (actor.role === 'seeker' && thread.seekerId !== actor.id) {
-      return { ok: false, error: 'Forbidden.' };
-    }
-    if (actor.role === 'admin' && thread.adminId !== actor.id) {
+    if (!(await this.canAccessThread(actor, thread))) {
       return { ok: false, error: 'Forbidden.' };
     }
 
@@ -180,6 +170,85 @@ export class MessagesGateway implements OnGatewayConnection {
     }
     await client.leave(this.threadRoom(threadId));
     return { ok: true, threadId };
+  }
+
+  @SubscribeMessage('typing')
+  async handleTyping(
+    @ConnectedSocket() _client: Socket,
+    @MessageBody() body: TypingPayload,
+  ) {
+    const threadId = body.threadId?.trim();
+    if (!threadId) {
+      return { ok: false, error: 'threadId is required.' };
+    }
+    const actor = await this.resolveActor(body.token);
+    if (!actor) {
+      return { ok: false, error: 'Unauthorized.' };
+    }
+    const thread = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+    });
+    if (!thread || !(await this.canAccessThread(actor, thread))) {
+      return { ok: false, error: 'Forbidden.' };
+    }
+
+    const payload = {
+      threadId,
+      participantKey: `${actor.role}:${actor.id}`,
+      isTyping: Boolean(body.isTyping),
+    };
+
+    // Notify peers only (not the typer).
+    if (actor.role !== 'provider') {
+      this.server
+        .to(this.userRoom('provider', thread.providerId))
+        .emit('typing:update', payload);
+    }
+    if (thread.seekerId && actor.role !== 'seeker') {
+      this.server
+        .to(this.userRoom('seeker', thread.seekerId))
+        .emit('typing:update', payload);
+    }
+    if (thread.adminId && actor.role !== 'admin') {
+      this.server
+        .to(this.userRoom('admin', thread.adminId))
+        .emit('typing:update', payload);
+    }
+
+    return { ok: true };
+  }
+
+  private emitToThreadParticipants(
+    thread: Pick<
+      MessageThread,
+      'id' | 'providerId' | 'seekerId' | 'adminId'
+    >,
+    event: string,
+    payload: unknown,
+  ) {
+    this.server
+      .to(this.userRoom('provider', thread.providerId))
+      .emit(event, payload);
+    if (thread.seekerId) {
+      this.server
+        .to(this.userRoom('seeker', thread.seekerId))
+        .emit(event, payload);
+    }
+    if (thread.adminId) {
+      this.server
+        .to(this.userRoom('admin', thread.adminId))
+        .emit(event, payload);
+    }
+  }
+
+  private async canAccessThread(
+    actor: { role: ActorRole; id: string },
+    thread: MessageThread,
+  ) {
+    if (actor.role === 'provider') return thread.providerId === actor.id;
+    if (actor.role === 'seeker') return thread.seekerId === actor.id;
+    if (actor.role === 'admin') return thread.adminId === actor.id;
+    return false;
   }
 
   private threadRoom(threadId: string) {

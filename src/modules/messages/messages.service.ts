@@ -10,18 +10,52 @@ import {
   type Message,
   type MessageReadState,
   type MessageThread,
+  type Prisma,
   type Provider,
   type User,
 } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type { DeliverMessagesDto } from './dto/deliver-messages.dto.js';
+import type { EditMessageDto } from './dto/edit-message.dto.js';
+import type { ListMessagesQueryDto } from './dto/list-messages-query.dto.js';
 import type { OpenThreadDto } from './dto/open-thread.dto.js';
-import type { SendMessageDto } from './dto/send-message.dto.js';
+import type {
+  MessageAttachmentDto,
+  SendMessageDto,
+} from './dto/send-message.dto.js';
 import { MessagesGateway } from './messages.gateway.js';
 
 export type MessageParticipantDto = {
   role: 'seeker' | 'provider' | 'admin';
   id: string;
+};
+
+export type MessageAttachmentOut = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;
+};
+
+export type MessageDto = {
+  id: string;
+  threadId: string;
+  sender: MessageParticipantDto;
+  body: string;
+  attachments: MessageAttachmentOut[];
+  createdAt: string;
+  editedAt: string | null;
+  deletedAt: string | null;
+  status: 'sent' | 'delivered' | 'read';
+};
+
+export type MessagePageDto = {
+  items: MessageDto[];
+  nextCursor: string | null;
+  hasMore: boolean;
 };
 
 export type MessageThreadDto = {
@@ -37,15 +71,6 @@ export type MessageThreadDto = {
   unreadCount: number;
   peer: MessageParticipantDto;
   peerName: string;
-};
-
-export type MessageDto = {
-  id: string;
-  threadId: string;
-  sender: MessageParticipantDto;
-  body: string;
-  createdAt: string;
-  status: 'sent';
 };
 
 type Actor = {
@@ -69,6 +94,8 @@ const threadInclude = {
   readStates: true,
 } as const;
 
+const ALLOWED_ATTACHMENT_PREFIXES = ['image/', 'application/pdf'] as const;
+
 @Injectable()
 export class MessagesService {
   constructor(
@@ -76,14 +103,32 @@ export class MessagesService {
     private readonly gateway: MessagesGateway,
   ) {}
 
-  async listThreads(user: JwtPayload): Promise<MessageThreadDto[]> {
+  async listThreads(
+    user: JwtPayload,
+    q?: string,
+  ): Promise<MessageThreadDto[]> {
     const actor = await this.resolveActor(user);
-    const where =
+    const where: Prisma.MessageThreadWhereInput =
       actor.role === 'provider'
         ? { providerId: actor.id }
         : actor.role === 'admin'
           ? { adminId: actor.id }
           : { seekerId: actor.id };
+
+    const query = q?.trim();
+    if (query) {
+      where.OR = [
+        { serviceTitle: { contains: query, mode: 'insensitive' } },
+        { lastMessagePreview: { contains: query, mode: 'insensitive' } },
+        {
+          provider: {
+            user: { name: { contains: query, mode: 'insensitive' } },
+          },
+        },
+        { seeker: { name: { contains: query, mode: 'insensitive' } } },
+        { admin: { name: { contains: query, mode: 'insensitive' } } },
+      ];
+    }
 
     const rows = await this.prisma.messageThread.findMany({
       where,
@@ -103,14 +148,46 @@ export class MessagesService {
   async listMessages(
     threadId: string,
     user: JwtPayload,
-  ): Promise<MessageDto[]> {
+    query: ListMessagesQueryDto,
+  ): Promise<MessagePageDto> {
     const actor = await this.resolveActor(user);
     await this.requireThreadAccess(threadId, actor);
+
+    const limit = query.limit ?? 40;
+    const search = query.q?.trim();
+    const where: Prisma.MessageWhereInput = { threadId };
+    if (query.cursor) {
+      const cursorDate = new Date(query.cursor);
+      if (Number.isNaN(cursorDate.getTime())) {
+        throw new BadRequestException('Invalid cursor.');
+      }
+      where.createdAt = { lt: cursorDate };
+    }
+    if (search) {
+      where.AND = [
+        { deletedAt: null },
+        { body: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
     const rows = await this.prisma.message.findMany({
-      where: { threadId },
-      orderBy: { createdAt: 'asc' },
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
     });
-    return rows.map((row) => this.toMessageDto(row));
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const chronological = [...page].reverse();
+    const nextCursor =
+      hasMore && chronological.length > 0
+        ? chronological[0]!.createdAt.toISOString()
+        : null;
+
+    return {
+      items: chronological.map((row) => this.toMessageDto(row, actor)),
+      nextCursor,
+      hasMore,
+    };
   }
 
   async openThread(
@@ -160,12 +237,18 @@ export class MessagesService {
   ): Promise<MessageDto> {
     const actor = await this.resolveActor(user);
     const thread = await this.requireThreadAccess(threadId, actor);
-    const body = dto.body.trim();
-    if (!body) {
+    const body = (dto.body ?? '').trim();
+    const attachments = this.normalizeAttachments(dto.attachments);
+    if (!body && attachments.length === 0) {
       throw new BadRequestException('Message cannot be empty.');
     }
 
     const senderRole = this.toSenderRole(actor.role);
+    const preview =
+      body.slice(0, 160) ||
+      (attachments.length > 0
+        ? `Attachment: ${attachments[0]!.name}`
+        : '');
 
     const message = await this.prisma.$transaction(async (tx) => {
       const created = await tx.message.create({
@@ -174,6 +257,7 @@ export class MessagesService {
           senderRole,
           senderId: actor.id,
           body,
+          attachments,
         },
       });
 
@@ -181,7 +265,7 @@ export class MessagesService {
         where: { id: thread.id },
         data: {
           lastMessageAt: created.createdAt,
-          lastMessagePreview: body.slice(0, 160),
+          lastMessagePreview: preview,
         },
       });
 
@@ -205,7 +289,7 @@ export class MessagesService {
       return created;
     });
 
-    const messageDto = this.toMessageDto(message);
+    const messageDto = this.toMessageDto(message, actor);
     this.gateway.emitMessageCreated(thread, messageDto);
 
     const fresh = await this.prisma.messageThread.findUnique({
@@ -216,7 +300,6 @@ export class MessagesService {
       await this.broadcastThread(fresh);
     }
 
-    // Notify provider when seeker or admin writes.
     if (actor.role === 'seeker' || actor.role === 'admin') {
       const href = thread.bookingId
         ? `/provider/bookings/${thread.bookingId}?chat=1`
@@ -229,14 +312,151 @@ export class MessagesService {
         data: {
           providerId: thread.providerId,
           type: 'chat_message',
-          title: actor.role === 'admin' ? 'Message from Serveo admin' : 'New message',
-          body: `${fromName}: ${body.slice(0, 120)}`,
+          title:
+            actor.role === 'admin' ? 'Message from Serveo admin' : 'New message',
+          body: `${fromName}: ${preview.slice(0, 120)}`,
           href,
         },
       });
     }
 
     return messageDto;
+  }
+
+  async editMessage(
+    threadId: string,
+    messageId: string,
+    dto: EditMessageDto,
+    user: JwtPayload,
+  ): Promise<MessageDto> {
+    const actor = await this.resolveActor(user);
+    const thread = await this.requireThreadAccess(threadId, actor);
+    const body = dto.body.trim();
+    if (!body) {
+      throw new BadRequestException('Message cannot be empty.');
+    }
+
+    const existing = await this.prisma.message.findFirst({
+      where: { id: messageId, threadId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Message not found.');
+    }
+    if (existing.deletedAt) {
+      throw new BadRequestException('Cannot edit a deleted message.');
+    }
+    this.assertOwnsMessage(existing, actor);
+
+    const updated = await this.prisma.message.update({
+      where: { id: existing.id },
+      data: { body, editedAt: new Date() },
+    });
+
+    const latest = await this.prisma.message.findFirst({
+      where: { threadId, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (latest?.id === updated.id) {
+      await this.prisma.messageThread.update({
+        where: { id: threadId },
+        data: { lastMessagePreview: body.slice(0, 160) },
+      });
+    }
+
+    const messageDto = this.toMessageDto(updated, actor);
+    this.gateway.emitMessageUpdated(thread, messageDto);
+    return messageDto;
+  }
+
+  async deleteMessage(
+    threadId: string,
+    messageId: string,
+    user: JwtPayload,
+  ): Promise<MessageDto> {
+    const actor = await this.resolveActor(user);
+    const thread = await this.requireThreadAccess(threadId, actor);
+    const existing = await this.prisma.message.findFirst({
+      where: { id: messageId, threadId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Message not found.');
+    }
+    if (existing.deletedAt) {
+      return this.toMessageDto(existing, actor);
+    }
+    this.assertOwnsMessage(existing, actor);
+
+    const deletedAt = new Date();
+    const updated = await this.prisma.message.update({
+      where: { id: existing.id },
+      data: {
+        deletedAt,
+        body: '',
+        attachments: [],
+      },
+    });
+
+    const latest = await this.prisma.message.findFirst({
+      where: { threadId, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    await this.prisma.messageThread.update({
+      where: { id: threadId },
+      data: {
+        lastMessagePreview: latest
+          ? latest.body.slice(0, 160) ||
+            (this.parseAttachments(latest.attachments)[0]
+              ? `Attachment: ${this.parseAttachments(latest.attachments)[0]!.name}`
+              : 'Message deleted')
+          : 'Message deleted',
+        lastMessageAt: latest?.createdAt ?? thread.lastMessageAt,
+      },
+    });
+
+    const messageDto = this.toMessageDto(updated, actor);
+    this.gateway.emitMessageUpdated(thread, messageDto);
+    return messageDto;
+  }
+
+  async markDelivered(
+    threadId: string,
+    dto: DeliverMessagesDto,
+    user: JwtPayload,
+  ): Promise<{ ok: true; updated: MessageDto[] }> {
+    const actor = await this.resolveActor(user);
+    const thread = await this.requireThreadAccess(threadId, actor);
+    const myRole = this.toSenderRole(actor.role);
+    const now = new Date();
+
+    const candidates = await this.prisma.message.findMany({
+      where: {
+        threadId,
+        id: { in: dto.messageIds },
+        deletedAt: null,
+        deliveredAt: null,
+        NOT: {
+          AND: [{ senderRole: myRole }, { senderId: actor.id }],
+        },
+      },
+    });
+
+    if (candidates.length === 0) {
+      return { ok: true, updated: [] };
+    }
+
+    await this.prisma.message.updateMany({
+      where: { id: { in: candidates.map((row) => row.id) } },
+      data: { deliveredAt: now },
+    });
+
+    const updatedRows = await this.prisma.message.findMany({
+      where: { id: { in: candidates.map((row) => row.id) } },
+    });
+    const updated = updatedRows.map((row) => this.toMessageDto(row, actor));
+    for (const message of updated) {
+      this.gateway.emitMessageUpdated(thread, message);
+    }
+    return { ok: true, updated };
   }
 
   async markRead(threadId: string, user: JwtPayload): Promise<{ ok: true }> {
@@ -261,6 +481,35 @@ export class MessagesService {
       },
       update: { lastReadAt },
     });
+
+    // Mark peer-authored messages as delivered + read up to now.
+    const peerMessages = await this.prisma.message.findMany({
+      where: {
+        threadId,
+        deletedAt: null,
+        createdAt: { lte: lastReadAt },
+        readAt: null,
+        NOT: {
+          AND: [{ senderRole: role }, { senderId: actor.id }],
+        },
+      },
+    });
+
+    if (peerMessages.length > 0) {
+      await this.prisma.message.updateMany({
+        where: { id: { in: peerMessages.map((row) => row.id) } },
+        data: {
+          deliveredAt: lastReadAt,
+          readAt: lastReadAt,
+        },
+      });
+      const refreshed = await this.prisma.message.findMany({
+        where: { id: { in: peerMessages.map((row) => row.id) } },
+      });
+      for (const row of refreshed) {
+        this.gateway.emitMessageUpdated(thread, this.toMessageDto(row, actor));
+      }
+    }
 
     this.gateway.emitThreadRead({
       threadId,
@@ -551,6 +800,72 @@ export class MessagesService {
     return MessageSenderRole.SEEKER;
   }
 
+  private assertOwnsMessage(message: Message, actor: Actor) {
+    const role = this.toSenderRole(actor.role);
+    if (message.senderRole !== role || message.senderId !== actor.id) {
+      throw new ForbiddenException('You can only change your own messages.');
+    }
+  }
+
+  private normalizeAttachments(
+    input?: MessageAttachmentDto[],
+  ): MessageAttachmentOut[] {
+    if (!input?.length) return [];
+    return input.map((item) => {
+      const mimeType = item.mimeType.trim().toLowerCase();
+      const allowed = ALLOWED_ATTACHMENT_PREFIXES.some(
+        (prefix) =>
+          mimeType === prefix ||
+          (prefix.endsWith('/') && mimeType.startsWith(prefix)),
+      );
+      if (!allowed) {
+        throw new BadRequestException(
+          'Only images and PDF attachments are allowed.',
+        );
+      }
+      const url = item.url.trim();
+      if (!url.startsWith('data:') && !url.startsWith('https://')) {
+        throw new BadRequestException('Attachment URL must be data: or https.');
+      }
+      if (item.sizeBytes > 5_000_000) {
+        throw new BadRequestException('Attachment exceeds 5MB limit.');
+      }
+      return {
+        id: randomUUID(),
+        name: item.name.trim().slice(0, 200),
+        mimeType,
+        sizeBytes: item.sizeBytes,
+        url,
+      };
+    });
+  }
+
+  private parseAttachments(raw: Prisma.JsonValue): MessageAttachmentOut[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const row = item as Record<string, unknown>;
+      if (
+        typeof row.id !== 'string' ||
+        typeof row.name !== 'string' ||
+        typeof row.mimeType !== 'string' ||
+        typeof row.sizeBytes !== 'number' ||
+        typeof row.url !== 'string'
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: row.id,
+          name: row.name,
+          mimeType: row.mimeType,
+          sizeBytes: row.sizeBytes,
+          url: row.url,
+        },
+      ];
+    });
+  }
+
   private toThreadDto(
     thread: ThreadWithRelations,
     actor: Actor,
@@ -598,20 +913,32 @@ export class MessagesService {
     };
   }
 
-  private toMessageDto(message: Message): MessageDto {
+  private toMessageDto(message: Message, _viewer?: Actor): MessageDto {
     const role =
       message.senderRole === MessageSenderRole.PROVIDER
         ? 'provider'
         : message.senderRole === MessageSenderRole.ADMIN
           ? 'admin'
           : 'seeker';
+
+    // Always derive from receipt timestamps so socket fans-out correctly
+    // to the sender when a peer delivers/reads.
+    let status: MessageDto['status'] = 'sent';
+    if (message.readAt) status = 'read';
+    else if (message.deliveredAt) status = 'delivered';
+
     return {
       id: message.id,
       threadId: message.threadId,
       sender: { role, id: message.senderId },
-      body: message.body,
+      body: message.deletedAt ? '' : message.body,
+      attachments: message.deletedAt
+        ? []
+        : this.parseAttachments(message.attachments),
       createdAt: message.createdAt.toISOString(),
-      status: 'sent',
+      editedAt: message.editedAt?.toISOString() ?? null,
+      deletedAt: message.deletedAt?.toISOString() ?? null,
+      status,
     };
   }
 
@@ -630,6 +957,7 @@ export class MessagesService {
       const unreadCount = await this.prisma.message.count({
         where: {
           threadId: thread.id,
+          deletedAt: null,
           createdAt: { gt: lastReadAt },
           NOT: {
             AND: [{ senderRole: myRole }, { senderId: actor.id }],
