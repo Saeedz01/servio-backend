@@ -13,13 +13,3 @@ export const CurrentUser = createParamDecorator(
     return request.user;
   },
 );
-
-/** For routes with OptionalJwtAuthGuard — may be undefined when guest. */
-export const OptionalCurrentUser = createParamDecorator(
-  (_data: unknown, ctx: ExecutionContext): JwtPayload | undefined => {
-    const request = ctx
-      .switchToHttp()
-      .getRequest<{ user?: JwtPayload }>();
-    return request.user;
-  },
-);

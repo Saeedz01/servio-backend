@@ -151,9 +151,7 @@ model Booking {
   id           String        @id @default(uuid())
   serviceId    String        @map("service_id")
   providerId   String        @map("provider_id")
-  seekerId     String?       @map("seeker_id")
-  guestName    String?       @map("guest_name")
-  guestPhone   String?       @map("guest_phone")
+  seekerId     String        @map("seeker_id")
   serviceTitle String        @map("service_title")
   address      String
   lat          Float
@@ -168,12 +166,11 @@ model Booking {
 
   service       Service        @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   provider      Provider       @relation(fields: [providerId], references: [id], onDelete: Restrict)
-  seeker        User?          @relation(fields: [seekerId], references: [id], onDelete: SetNull)
+  seeker        User           @relation(fields: [seekerId], references: [id], onDelete: Cascade)
   messageThread MessageThread?
 
   @@index([providerId])
   @@index([seekerId])
-  @@index([guestPhone])
   @@index([status])
   @@index([serviceId])
   @@map("bookings")
@@ -182,9 +179,7 @@ model Booking {
 model Job {
   id          String    @id @default(uuid())
   categoryId  String    @map("category_id")
-  seekerId    String?   @map("seeker_id")
-  guestName   String?   @map("guest_name")
-  guestPhone  String?   @map("guest_phone")
+  seekerId    String    @map("seeker_id")
   title       String
   description String
   address     String
@@ -197,12 +192,11 @@ model Job {
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   category ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  seeker   User?           @relation(fields: [seekerId], references: [id], onDelete: SetNull)
+  seeker   User            @relation(fields: [seekerId], references: [id], onDelete: Cascade)
   biddings Bidding[]
 
   @@index([categoryId])
   @@index([seekerId])
-  @@index([guestPhone])
   @@index([status])
   @@map("jobs")
 }

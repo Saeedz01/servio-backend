@@ -214,19 +214,6 @@ export class BiddingGateway implements OnGatewayConnection {
       return false;
     }
 
-    // Guest job owner
-    if (job.seekerId !== null) return false;
-    const phone = (body.phone ?? '').replace(/\D/g, '');
-    if (!phone || phone.length < 8) return false;
-    if (job.guestPhone !== phone) return false;
-    const name = body.name?.trim();
-    if (
-      name &&
-      job.guestName &&
-      job.guestName.toLowerCase() !== name.toLowerCase()
-    ) {
-      return false;
-    }
-    return true;
+    return false;
   }
 }

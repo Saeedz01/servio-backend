@@ -599,7 +599,7 @@ export class MessagesService {
     if (!booking) {
       throw new NotFoundException('Booking not found.');
     }
-    if (!booking.seekerId || !booking.seeker) {
+    if (!booking.seeker) {
       throw new BadRequestException(
         'Chat requires a logged-in seeker on this booking.',
       );

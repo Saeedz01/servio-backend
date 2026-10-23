@@ -14,15 +14,13 @@ import {
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { CreateBookingDto } from './dto/create-booking.dto.js';
-import type { GuestLookupDto } from './dto/guest-lookup.dto.js';
-import type { WithdrawBookingDto } from './dto/withdraw-booking.dto.js';
 
 export type BookingResponse = {
   id: string;
   serviceId: string;
   providerId: string;
   serviceTitle: string;
-  seekerId: string | null;
+  seekerId: string;
   seekerName: string;
   seekerPhone: string;
   address: string;
@@ -36,7 +34,7 @@ export type BookingResponse = {
   updatedAt: string;
 };
 
-type BookingWithSeeker = Booking & { seeker: User | null };
+type BookingWithSeeker = Booking & { seeker: User };
 
 @Injectable()
 export class BookingsService {
@@ -44,8 +42,12 @@ export class BookingsService {
 
   async create(
     dto: CreateBookingDto,
-    user?: JwtPayload,
+    user: JwtPayload,
   ): Promise<BookingResponse> {
+    if (user.role !== 'SEEKER') {
+      throw new ForbiddenException('Only seekers can create booking requests.');
+    }
+
     const service = await this.prisma.service.findUnique({
       where: { id: dto.serviceId.trim() },
     });
@@ -61,42 +63,18 @@ export class BookingsService {
       throw new BadRequestException('Pick a time in the future.');
     }
 
-    let seekerId: string | null = null;
-    let guestName: string | null = null;
-    let guestPhone: string | null = null;
-
-    if (user) {
-      if (user.role !== 'SEEKER') {
-        throw new ForbiddenException('Only seekers can create booking requests.');
-      }
-      const seeker = await this.prisma.user.findUnique({
-        where: { id: user.sub },
-      });
-      if (!seeker) {
-        throw new UnauthorizedException('Seeker account not found.');
-      }
-      // Contact details come from the users table via seeker relation — never guest fields.
-      seekerId = seeker.id;
-    } else {
-      const name = dto.guestName?.trim() ?? '';
-      const phone = this.normalizePhone(dto.guestPhone ?? '');
-      if (!name) {
-        throw new BadRequestException('Enter your name.');
-      }
-      if (!phone || phone.length < 8) {
-        throw new BadRequestException('Enter a valid phone number.');
-      }
-      guestName = name;
-      guestPhone = phone;
+    const seeker = await this.prisma.user.findUnique({
+      where: { id: user.sub },
+    });
+    if (!seeker) {
+      throw new UnauthorizedException('Seeker account not found.');
     }
 
     const booking = await this.prisma.booking.create({
       data: {
         serviceId: service.id,
         providerId: service.providerId,
-        seekerId,
-        guestName,
-        guestPhone,
+        seekerId: seeker.id,
         serviceTitle: service.title,
         address: dto.address.trim(),
         lat: dto.lat,
@@ -114,27 +92,6 @@ export class BookingsService {
   async findMineAsSeeker(userId: string): Promise<BookingResponse[]> {
     const rows = await this.prisma.booking.findMany({
       where: { seekerId: userId },
-      include: { seeker: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    return rows.map((row) => this.toResponse(row));
-  }
-
-  async guestLookup(dto: GuestLookupDto): Promise<BookingResponse[]> {
-    const phone = this.normalizePhone(dto.phone);
-    if (!phone || phone.length < 8) {
-      throw new BadRequestException('Enter a valid phone number.');
-    }
-
-    const name = dto.name?.trim();
-    const rows = await this.prisma.booking.findMany({
-      where: {
-        seekerId: null,
-        guestPhone: phone,
-        ...(name
-          ? { guestName: { equals: name, mode: 'insensitive' as const } }
-          : {}),
-      },
       include: { seeker: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -209,7 +166,6 @@ export class BookingsService {
     }
     await this.assertCanView(booking, user);
 
-    // Opening the booking clears the Bookings-tab unread for accepted bids.
     if (user.role === 'PROVIDER' && booking.providerViewedAt === null) {
       const viewed = await this.prisma.booking.update({
         where: { id: booking.id },
@@ -232,8 +188,7 @@ export class BookingsService {
 
   async withdraw(
     id: string,
-    user?: JwtPayload,
-    dto?: WithdrawBookingDto,
+    user: JwtPayload,
   ): Promise<{ id: string; deleted: true }> {
     const booking = await this.prisma.booking.findUnique({ where: { id } });
     if (!booking) {
@@ -249,34 +204,11 @@ export class BookingsService {
       );
     }
 
-    if (user) {
-      if (user.role !== 'SEEKER') {
-        throw new ForbiddenException('Only seekers can withdraw booking requests.');
-      }
-      if (booking.seekerId !== user.sub) {
-        throw new ForbiddenException('You can only withdraw your own requests.');
-      }
-    } else {
-      if (booking.seekerId !== null) {
-        throw new UnauthorizedException(
-          'Sign in to withdraw this booking request.',
-        );
-      }
-      const phone = this.normalizePhone(dto?.phone ?? '');
-      if (!phone || phone.length < 8) {
-        throw new BadRequestException('Enter a valid phone number.');
-      }
-      if (booking.guestPhone !== phone) {
-        throw new ForbiddenException('Phone does not match this request.');
-      }
-      const name = dto?.name?.trim();
-      if (
-        name &&
-        booking.guestName &&
-        booking.guestName.toLowerCase() !== name.toLowerCase()
-      ) {
-        throw new ForbiddenException('Name does not match this request.');
-      }
+    if (user.role !== 'SEEKER') {
+      throw new ForbiddenException('Only seekers can withdraw booking requests.');
+    }
+    if (booking.seekerId !== user.sub) {
+      throw new ForbiddenException('You can only withdraw your own requests.');
     }
 
     await this.prisma.booking.delete({ where: { id } });
@@ -362,16 +294,14 @@ export class BookingsService {
   }
 
   private toResponse(booking: BookingWithSeeker): BookingResponse {
-    const seekerName = booking.seeker?.name ?? booking.guestName ?? '';
-    const seekerPhone = booking.seeker?.phone ?? booking.guestPhone ?? '';
     return {
       id: booking.id,
       serviceId: booking.serviceId,
       providerId: booking.providerId,
       serviceTitle: booking.serviceTitle,
       seekerId: booking.seekerId,
-      seekerName,
-      seekerPhone,
+      seekerName: booking.seeker.name,
+      seekerPhone: booking.seeker.phone,
       address: booking.address,
       lat: booking.lat,
       lng: booking.lng,
@@ -397,9 +327,5 @@ export class BookingsService {
       default:
         return 'pending';
     }
-  }
-
-  private normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '');
   }
 }

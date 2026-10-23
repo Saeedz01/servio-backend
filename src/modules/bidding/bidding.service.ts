@@ -22,9 +22,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import type { BookingResponse } from '../bookings/bookings.service.js';
 import type { NotificationResponse } from '../notifications/notifications.service.js';
 import { BiddingGateway } from './bidding.gateway.js';
-import type { AcceptBiddingDto } from './dto/accept-bidding.dto.js';
 import type { CreateBiddingDto } from './dto/create-bidding.dto.js';
-import type { GuestJobBidsDto } from './dto/guest-job-bids.dto.js';
 
 export type BiddingStatusDto = 'pending' | 'accepted' | 'rejected';
 
@@ -113,11 +111,10 @@ export class BiddingService {
     return response;
   }
 
-  /** Seeker (JWT or guest) accepts a bid → booked booking + provider notification. */
+  /** Seeker accepts a bid → booked booking + provider notification. */
   async accept(
     bidId: string,
-    dto: AcceptBiddingDto,
-    user?: JwtPayload,
+    user: JwtPayload,
   ): Promise<AcceptBiddingResponse> {
     const bid = await this.prisma.bidding.findUnique({
       where: { id: bidId.trim() },
@@ -130,7 +127,7 @@ export class BiddingService {
       throw new NotFoundException('Bid not found.');
     }
 
-    await this.assertCanAcceptJob(bid.job, dto, user);
+    this.assertCanAcceptJob(bid.job, user);
 
     if (bid.job.status !== JobStatus.OPEN) {
       throw new BadRequestException('This job is no longer open.');
@@ -153,14 +150,11 @@ export class BiddingService {
       );
     }
 
-    let seekerName = bid.job.guestName?.trim() || 'A seeker';
-    if (bid.job.seekerId) {
-      const seeker = await this.prisma.user.findUnique({
-        where: { id: bid.job.seekerId },
-        select: { name: true },
-      });
-      if (seeker?.name) seekerName = seeker.name;
-    }
+    const seeker = await this.prisma.user.findUnique({
+      where: { id: bid.job.seekerId },
+      select: { name: true },
+    });
+    const seekerName = seeker?.name?.trim() || 'A seeker';
 
     const noteParts = [
       `Awarded from job bid ($${bid.price.toFixed(0)}).`,
@@ -194,8 +188,6 @@ export class BiddingService {
           serviceId: service.id,
           providerId: bid.providerId,
           seekerId: bid.job.seekerId,
-          guestName: bid.job.guestName,
-          guestPhone: bid.job.guestPhone,
           serviceTitle: bid.job.title,
           address: bid.job.address,
           lat: bid.job.lat,
@@ -260,35 +252,6 @@ export class BiddingService {
     return this.listBidsForJob(job.id);
   }
 
-  /** Guest job owner lists bids with matching phone (+ optional name). */
-  async findForJobAsGuest(
-    jobId: string,
-    dto: GuestJobBidsDto,
-  ): Promise<BiddingResponse[]> {
-    const job = await this.requireJob(jobId);
-    if (job.seekerId !== null) {
-      throw new UnauthorizedException('Sign in to view bids on this job.');
-    }
-
-    const phone = this.normalizePhone(dto.phone);
-    if (!phone || phone.length < 8) {
-      throw new BadRequestException('Enter a valid phone number.');
-    }
-    if (job.guestPhone !== phone) {
-      throw new ForbiddenException('Phone does not match this job.');
-    }
-    const name = dto.name?.trim();
-    if (
-      name &&
-      job.guestName &&
-      job.guestName.toLowerCase() !== name.toLowerCase()
-    ) {
-      throw new ForbiddenException('Name does not match this job.');
-    }
-
-    return this.listBidsForJob(job.id);
-  }
-
   /** Provider’s own bid on a job. */
   async findMyBidOnJob(
     jobId: string,
@@ -320,42 +283,14 @@ export class BiddingService {
     return this.toResponse(bid);
   }
 
-  private async assertCanAcceptJob(
-    job: Job,
-    dto: AcceptBiddingDto,
-    user?: JwtPayload,
-  ) {
-    if (user?.role === 'SEEKER') {
-      if (job.seekerId !== user.sub) {
-        throw new ForbiddenException(
-          'You can only accept bids on jobs you posted.',
-        );
-      }
-      return;
-    }
-
-    if (user?.role === 'PROVIDER' || user?.role === 'ADMIN') {
+  private assertCanAcceptJob(job: Job, user: JwtPayload) {
+    if (user.role !== 'SEEKER') {
       throw new ForbiddenException('Only the seeker can accept a bid.');
     }
-
-    // Guest owner
-    if (job.seekerId !== null) {
-      throw new UnauthorizedException('Sign in to accept a bid on this job.');
-    }
-    const phone = this.normalizePhone(dto.phone ?? '');
-    if (!phone || phone.length < 8) {
-      throw new BadRequestException('Enter a valid phone number.');
-    }
-    if (job.guestPhone !== phone) {
-      throw new ForbiddenException('Phone does not match this job.');
-    }
-    const name = dto.name?.trim();
-    if (
-      name &&
-      job.guestName &&
-      job.guestName.toLowerCase() !== name.toLowerCase()
-    ) {
-      throw new ForbiddenException('Name does not match this job.');
+    if (job.seekerId !== user.sub) {
+      throw new ForbiddenException(
+        'You can only accept bids on jobs you posted.',
+      );
     }
   }
 
@@ -424,9 +359,7 @@ export class BiddingService {
     serviceId: string;
     providerId: string;
     serviceTitle: string;
-    seekerId: string | null;
-    guestName: string | null;
-    guestPhone: string | null;
+    seekerId: string;
     address: string;
     lat: number;
     lng: number;
@@ -436,7 +369,7 @@ export class BiddingService {
     providerViewedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
-    seeker: User | null;
+    seeker: User;
   }): BookingResponse {
     return {
       id: booking.id,
@@ -444,8 +377,8 @@ export class BiddingService {
       providerId: booking.providerId,
       serviceTitle: booking.serviceTitle,
       seekerId: booking.seekerId,
-      seekerName: booking.seeker?.name ?? booking.guestName ?? '',
-      seekerPhone: booking.seeker?.phone ?? booking.guestPhone ?? '',
+      seekerName: booking.seeker.name,
+      seekerPhone: booking.seeker.phone,
       address: booking.address,
       lat: booking.lat,
       lng: booking.lng,
@@ -497,7 +430,4 @@ export class BiddingService {
     }
   }
 
-  private normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '');
-  }
 }

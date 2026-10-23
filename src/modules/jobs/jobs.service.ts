@@ -15,14 +15,13 @@ import {
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { CreateJobDto } from './dto/create-job.dto.js';
-import type { GuestLookupDto } from './dto/guest-lookup.dto.js';
 
 export type JobResponse = {
   id: string;
   categoryId: string;
   categoryName: string;
   categorySlug: string;
-  seekerId: string | null;
+  seekerId: string;
   seekerName: string;
   seekerPhone: string;
   title: string;
@@ -37,7 +36,7 @@ export type JobResponse = {
 };
 
 type JobWithRelations = Job & {
-  seeker: User | null;
+  seeker: User;
   category: ServiceCategory;
 };
 
@@ -45,7 +44,11 @@ type JobWithRelations = Job & {
 export class JobsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateJobDto, user?: JwtPayload): Promise<JobResponse> {
+  async create(dto: CreateJobDto, user: JwtPayload): Promise<JobResponse> {
+    if (user.role !== 'SEEKER') {
+      throw new ForbiddenException('Only seekers can post jobs.');
+    }
+
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: dto.categoryId.trim(), isActive: true },
     });
@@ -61,34 +64,17 @@ export class JobsService {
       throw new BadRequestException('Pick a time in the future.');
     }
 
-    let seekerId: string | null = null;
-    let guestName: string | null = null;
-    let guestPhone: string | null = null;
-
-    if (user) {
-      if (user.role !== 'SEEKER') {
-        throw new ForbiddenException('Only seekers can post jobs.');
-      }
-      seekerId = user.sub;
-    } else {
-      const name = dto.guestName?.trim() ?? '';
-      const phone = this.normalizePhone(dto.guestPhone ?? '');
-      if (!name) {
-        throw new BadRequestException('Enter your name.');
-      }
-      if (!phone || phone.length < 8) {
-        throw new BadRequestException('Enter a valid phone number.');
-      }
-      guestName = name;
-      guestPhone = phone;
+    const seeker = await this.prisma.user.findUnique({
+      where: { id: user.sub },
+    });
+    if (!seeker) {
+      throw new UnauthorizedException('Seeker account not found.');
     }
 
     const job = await this.prisma.job.create({
       data: {
         categoryId: category.id,
-        seekerId,
-        guestName,
-        guestPhone,
+        seekerId: seeker.id,
         title: dto.title.trim(),
         description: dto.description.trim(),
         address: dto.address.trim(),
@@ -106,27 +92,6 @@ export class JobsService {
   async findMineAsSeeker(userId: string): Promise<JobResponse[]> {
     const rows = await this.prisma.job.findMany({
       where: { seekerId: userId },
-      include: { seeker: true, category: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    return rows.map((row) => this.toResponse(row));
-  }
-
-  async guestLookup(dto: GuestLookupDto): Promise<JobResponse[]> {
-    const phone = this.normalizePhone(dto.phone);
-    if (!phone || phone.length < 8) {
-      throw new BadRequestException('Enter a valid phone number.');
-    }
-
-    const name = dto.name?.trim();
-    const rows = await this.prisma.job.findMany({
-      where: {
-        seekerId: null,
-        guestPhone: phone,
-        ...(name
-          ? { guestName: { equals: name, mode: 'insensitive' as const } }
-          : {}),
-      },
       include: { seeker: true, category: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -242,8 +207,8 @@ export class JobsService {
       categoryName: job.category.name,
       categorySlug: job.category.slug,
       seekerId: job.seekerId,
-      seekerName: job.seeker?.name ?? job.guestName ?? '',
-      seekerPhone: job.seeker?.phone ?? job.guestPhone ?? '',
+      seekerName: job.seeker.name,
+      seekerPhone: job.seeker.phone,
       title: job.title,
       description: job.description,
       address: job.address,
@@ -265,9 +230,5 @@ export class JobsService {
       default:
         return 'open';
     }
-  }
-
-  private normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '');
   }
 }

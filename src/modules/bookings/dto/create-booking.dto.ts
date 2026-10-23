@@ -6,27 +6,12 @@ import {
   IsOptional,
   IsString,
   MaxLength,
-  MinLength,
 } from 'class-validator';
 
 export class CreateBookingDto {
   @IsString()
   @IsNotEmpty()
   serviceId!: string;
-
-  /** Required for guests; ignored when a seeker JWT is present. */
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(120)
-  guestName?: string;
-
-  /** Required for guests; ignored when a seeker JWT is present. */
-  @IsOptional()
-  @IsString()
-  @MinLength(8)
-  @MaxLength(32)
-  guestPhone?: string;
 
   @IsString()
   @IsNotEmpty()
