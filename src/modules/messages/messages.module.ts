@@ -1,12 +1,14 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { TokensModule } from '../tokens/tokens.module.js';
 import { MessagesController } from './messages.controller.js';
 import { MessagesGateway } from './messages.gateway.js';
 import { MessagesService } from './messages.service.js';
 
 @Module({
   imports: [
+    TokensModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

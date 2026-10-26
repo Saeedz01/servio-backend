@@ -10,6 +10,7 @@ import {
   AccountStatus,
   BiddingStatus,
   BookingStatus,
+  ContactUnlockTargetType,
   JobStatus,
   ServiceStatus,
   type Bidding,
@@ -21,6 +22,7 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator.
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { BookingResponse } from '../bookings/bookings.service.js';
 import type { NotificationResponse } from '../notifications/notifications.service.js';
+import { TokensService } from '../tokens/tokens.service.js';
 import { BiddingGateway } from './bidding.gateway.js';
 import type { CreateBiddingDto } from './dto/create-bidding.dto.js';
 
@@ -53,6 +55,7 @@ export class BiddingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly biddingGateway: BiddingGateway,
+    private readonly tokensService: TokensService,
   ) {}
 
   async create(
@@ -199,6 +202,13 @@ export class BiddingService {
         include: { seeker: true },
       });
 
+      await this.tokensService.inheritJobUnlockToBooking(
+        bid.providerId,
+        bid.jobId,
+        booking.id,
+        tx,
+      );
+
       const notification = await tx.notification.create({
         data: {
           providerId: bid.providerId,
@@ -212,8 +222,16 @@ export class BiddingService {
       return { accepted, booking, notification };
     });
 
+    const contactUnlocked = await this.tokensService.hasUnlock(
+      bid.providerId,
+      ContactUnlockTargetType.BOOKING,
+      result.booking.id,
+    );
     const bidResponse = this.toResponse(result.accepted);
-    const bookingResponse = this.toBookingResponse(result.booking);
+    const bookingResponse = this.toBookingResponse(
+      result.booking,
+      contactUnlocked,
+    );
     const notificationResponse = this.toNotificationResponse(
       result.notification,
     );
@@ -354,23 +372,26 @@ export class BiddingService {
     return 'pending';
   }
 
-  private toBookingResponse(booking: {
-    id: string;
-    serviceId: string;
-    providerId: string;
-    serviceTitle: string;
-    seekerId: string;
-    address: string;
-    lat: number;
-    lng: number;
-    requestedAt: Date;
-    note: string;
-    status: BookingStatus;
-    providerViewedAt: Date | null;
-    createdAt: Date;
-    updatedAt: Date;
-    seeker: User;
-  }): BookingResponse {
+  private toBookingResponse(
+    booking: {
+      id: string;
+      serviceId: string;
+      providerId: string;
+      serviceTitle: string;
+      seekerId: string;
+      address: string;
+      lat: number;
+      lng: number;
+      requestedAt: Date;
+      note: string;
+      status: BookingStatus;
+      providerViewedAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+      seeker: User;
+    },
+    contactUnlocked: boolean,
+  ): BookingResponse {
     return {
       id: booking.id,
       serviceId: booking.serviceId,
@@ -378,7 +399,8 @@ export class BiddingService {
       serviceTitle: booking.serviceTitle,
       seekerId: booking.seekerId,
       seekerName: booking.seeker.name,
-      seekerPhone: booking.seeker.phone,
+      seekerPhone: contactUnlocked ? booking.seeker.phone : null,
+      contactUnlocked,
       address: booking.address,
       lat: booking.lat,
       lng: booking.lng,

@@ -10,6 +10,7 @@ import { JobsModule } from './modules/jobs/jobs.module.js';
 import { MessagesModule } from './modules/messages/messages.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { ServicesModule } from './modules/services/services.module.js';
+import { TokensModule } from './modules/tokens/tokens.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
@@ -33,6 +34,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     BiddingModule,
     NotificationsModule,
     MessagesModule,
+    TokensModule,
   ],
   controllers: [AppController],
   providers: [AppService],

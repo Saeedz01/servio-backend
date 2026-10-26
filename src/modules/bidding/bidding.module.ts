@@ -1,12 +1,14 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { TokensModule } from '../tokens/tokens.module.js';
 import { BiddingController } from './bidding.controller.js';
 import { BiddingGateway } from './bidding.gateway.js';
 import { BiddingService } from './bidding.service.js';
 
 @Module({
   imports: [
+    TokensModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -23,6 +25,6 @@ import { BiddingService } from './bidding.service.js';
   ],
   controllers: [BiddingController],
   providers: [BiddingService, BiddingGateway],
-  exports: [BiddingService],
+  exports: [BiddingService, BiddingGateway],
 })
 export class BiddingModule {}

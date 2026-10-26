@@ -52,6 +52,16 @@ enum BiddingStatus {
   REJECTED
 }
 
+enum TokenLedgerType {
+  GRANT_MONTHLY
+  SPEND_UNLOCK
+}
+
+enum ContactUnlockTargetType {
+  BOOKING
+  JOB
+}
+
 model Role {
   id        String     @id @default(uuid())
   roleName  String     @unique @map("role_name")
@@ -100,8 +110,57 @@ model Provider {
   biddings       Bidding[]
   notifications  Notification[]
   messageThreads MessageThread[]
+  tokenWallet    ProviderTokenWallet?
+  tokenLedger    ProviderTokenLedger[]
+  contactUnlocks ContactUnlock[]
 
   @@map("providers")
+}
+
+model ProviderTokenWallet {
+  id         String   @id @default(uuid())
+  providerId String   @unique @map("provider_id")
+  balance    Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@map("provider_token_wallets")
+}
+
+model ProviderTokenLedger {
+  id           String          @id @default(uuid())
+  providerId   String          @map("provider_id")
+  type         TokenLedgerType
+  amount       Int
+  balanceAfter Int             @map("balance_after")
+  /** For GRANT_MONTHLY: YYYY-MM. */
+  monthKey     String?         @map("month_key")
+  refType      ContactUnlockTargetType? @map("ref_type")
+  refId        String?         @map("ref_id")
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+  @@index([providerId, type, monthKey])
+  @@map("provider_token_ledgers")
+}
+
+model ContactUnlock {
+  id         String                   @id @default(uuid())
+  providerId String                   @map("provider_id")
+  targetType ContactUnlockTargetType  @map("target_type")
+  targetId   String                   @map("target_id")
+  createdAt  DateTime                 @default(now()) @map("created_at")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, targetType, targetId])
+  @@index([providerId])
+  @@index([targetType, targetId])
+  @@map("contact_unlocks")
 }
 
 model ServiceCategory {

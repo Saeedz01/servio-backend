@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import {
+  ContactUnlockTargetType,
   JobStatus,
   ServiceStatus,
   type Job,
@@ -14,6 +15,8 @@ import {
 } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { BiddingGateway } from '../bidding/bidding.gateway.js';
+import { TokensService } from '../tokens/tokens.service.js';
 import type { CreateJobDto } from './dto/create-job.dto.js';
 
 export type JobResponse = {
@@ -23,7 +26,8 @@ export type JobResponse = {
   categorySlug: string;
   seekerId: string;
   seekerName: string;
-  seekerPhone: string;
+  seekerPhone: string | null;
+  contactUnlocked: boolean;
   title: string;
   description: string;
   address: string;
@@ -42,7 +46,11 @@ type JobWithRelations = Job & {
 
 @Injectable()
 export class JobsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tokensService: TokensService,
+    private readonly biddingGateway: BiddingGateway,
+  ) {}
 
   async create(dto: CreateJobDto, user: JwtPayload): Promise<JobResponse> {
     if (user.role !== 'SEEKER') {
@@ -86,7 +94,13 @@ export class JobsService {
       include: { seeker: true, category: true },
     });
 
-    return this.toResponse(job);
+    const seekerResponse = this.toResponse(job, true);
+    // Providers receive a locked contact view over the socket.
+    this.biddingGateway.emitJobCreated(category.id, {
+      job: this.toResponse(job, false),
+    });
+
+    return seekerResponse;
   }
 
   async findMineAsSeeker(userId: string): Promise<JobResponse[]> {
@@ -95,7 +109,7 @@ export class JobsService {
       include: { seeker: true, category: true },
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row) => this.toResponse(row));
+    return rows.map((row) => this.toResponse(row, true));
   }
 
   /**
@@ -117,7 +131,12 @@ export class JobsService {
       include: { seeker: true, category: true },
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row) => this.toResponse(row));
+    const unlocked = await this.tokensService.unlockedTargetIds(
+      provider.id,
+      ContactUnlockTargetType.JOB,
+      rows.map((row) => row.id),
+    );
+    return rows.map((row) => this.toResponse(row, unlocked.has(row.id)));
   }
 
   async findOne(id: string, user: JwtPayload): Promise<JobResponse> {
@@ -129,7 +148,18 @@ export class JobsService {
       throw new NotFoundException('Job not found.');
     }
     await this.assertCanView(job, user);
-    return this.toResponse(job);
+
+    if (user.role === 'PROVIDER') {
+      const provider = await this.requireProvider(user.sub);
+      const unlocked = await this.tokensService.hasUnlock(
+        provider.id,
+        ContactUnlockTargetType.JOB,
+        job.id,
+      );
+      return this.toResponse(job, unlocked);
+    }
+
+    return this.toResponse(job, true);
   }
 
   async close(id: string, userId: string): Promise<JobResponse> {
@@ -152,7 +182,7 @@ export class JobsService {
       data: { status: JobStatus.CLOSED },
       include: { seeker: true, category: true },
     });
-    return this.toResponse(job);
+    return this.toResponse(job, true);
   }
 
   private async assertCanView(job: Job, user: JwtPayload) {
@@ -200,7 +230,10 @@ export class JobsService {
     return provider;
   }
 
-  private toResponse(job: JobWithRelations): JobResponse {
+  private toResponse(
+    job: JobWithRelations,
+    contactUnlocked: boolean,
+  ): JobResponse {
     return {
       id: job.id,
       categoryId: job.categoryId,
@@ -208,7 +241,8 @@ export class JobsService {
       categorySlug: job.category.slug,
       seekerId: job.seekerId,
       seekerName: job.seeker.name,
-      seekerPhone: job.seeker.phone,
+      seekerPhone: contactUnlocked ? job.seeker.phone : null,
+      contactUnlocked,
       title: job.title,
       description: job.description,
       address: job.address,

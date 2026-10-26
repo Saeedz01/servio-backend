@@ -10,8 +10,11 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { ServiceStatus } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type { BookingResponse } from '../bookings/bookings.service.js';
+import type { JobResponse } from '../jobs/jobs.service.js';
 import type { BiddingResponse } from './bidding.service.js';
 
 type JoinJobPayload = {
@@ -25,36 +28,35 @@ type JoinProviderPayload = {
   token?: string;
 };
 
+export type ProviderNotificationPayload = {
+  id: string;
+  providerId: string;
+  type: string;
+  title: string;
+  body: string;
+  href: string | null;
+  read: boolean;
+  createdAt: string;
+};
+
 export type BidAcceptedPayload = {
   bid: BiddingResponse;
-  booking: {
-    id: string;
-    serviceId: string;
-    providerId: string;
-    serviceTitle: string;
-    seekerId: string | null;
-    seekerName: string;
-    seekerPhone: string;
-    address: string;
-    lat: number;
-    lng: number;
-    requestedAt: string;
-    note: string;
-    status: string;
-    providerViewedAt: string | null;
-    createdAt: string;
-    updatedAt: string;
-  };
-  notification: {
-    id: string;
-    providerId: string;
-    type: string;
-    title: string;
-    body: string;
-    href: string | null;
-    read: boolean;
-    createdAt: string;
-  };
+  booking: BookingResponse;
+  notification: ProviderNotificationPayload;
+};
+
+export type BookingCreatedPayload = {
+  booking: BookingResponse;
+  notification: ProviderNotificationPayload;
+};
+
+export type JobCreatedPayload = {
+  job: JobResponse;
+};
+
+export type BookingWithdrawnPayload = {
+  bookingId: string;
+  providerId: string;
 };
 
 @WebSocketGateway({
@@ -94,6 +96,28 @@ export class BiddingGateway implements OnGatewayConnection {
       .emit('bid:accepted', payload);
   }
 
+  /** Instant booking request for the owning provider. */
+  emitBookingCreated(providerId: string, payload: BookingCreatedPayload) {
+    this.server
+      .to(this.providerRoom(providerId))
+      .emit('booking:created', payload);
+  }
+
+  /** Instant open-job alert for providers watching this category. */
+  emitJobCreated(categoryId: string, payload: JobCreatedPayload) {
+    this.server.to(this.categoryRoom(categoryId)).emit('job:created', payload);
+  }
+
+  /** Seeker withdrew a request — remove it from the provider’s list instantly. */
+  emitBookingWithdrawn(
+    providerId: string,
+    payload: BookingWithdrawnPayload,
+  ) {
+    this.server
+      .to(this.providerRoom(providerId))
+      .emit('booking:withdrawn', payload);
+  }
+
   @SubscribeMessage('joinJob')
   async handleJoinJob(
     @ConnectedSocket() client: Socket,
@@ -126,7 +150,10 @@ export class BiddingGateway implements OnGatewayConnection {
     return { ok: true, jobId };
   }
 
-  /** Provider joins a private room to receive bid-accepted alerts instantly. */
+  /**
+   * Provider joins a private room (bookings / bid-accepted) plus category
+   * rooms for their published services (new open jobs).
+   */
   @SubscribeMessage('joinProvider')
   async handleJoinProvider(
     @ConnectedSocket() client: Socket,
@@ -152,7 +179,19 @@ export class BiddingGateway implements OnGatewayConnection {
         return { ok: false, error: 'Provider profile not found.' };
       }
       await client.join(this.providerRoom(provider.id));
-      return { ok: true, providerId: provider.id };
+
+      const categoryIds = await this.publishedCategoryIds(provider.id);
+      for (const categoryId of categoryIds) {
+        await client.join(this.categoryRoom(categoryId));
+      }
+      client.data.providerId = provider.id;
+      client.data.categoryIds = categoryIds;
+
+      return {
+        ok: true,
+        providerId: provider.id,
+        categoryIds,
+      };
     } catch {
       return { ok: false, error: 'Invalid token.' };
     }
@@ -177,6 +216,14 @@ export class BiddingGateway implements OnGatewayConnection {
       });
       if (provider) {
         await client.leave(this.providerRoom(provider.id));
+        const categoryIds: string[] =
+          (client.data.categoryIds as string[] | undefined) ??
+          (await this.publishedCategoryIds(provider.id));
+        for (const categoryId of categoryIds) {
+          await client.leave(this.categoryRoom(categoryId));
+        }
+        client.data.providerId = undefined;
+        client.data.categoryIds = undefined;
       }
       return { ok: true };
     } catch {
@@ -190,6 +237,22 @@ export class BiddingGateway implements OnGatewayConnection {
 
   private providerRoom(providerId: string) {
     return `provider:${providerId}`;
+  }
+
+  private categoryRoom(categoryId: string) {
+    return `category:${categoryId}`;
+  }
+
+  private async publishedCategoryIds(providerId: string): Promise<string[]> {
+    const services = await this.prisma.service.findMany({
+      where: {
+        providerId,
+        status: ServiceStatus.PUBLISHED,
+      },
+      select: { categoryId: true },
+      distinct: ['categoryId'],
+    });
+    return services.map((service) => service.categoryId);
   }
 
   private async canWatchJob(

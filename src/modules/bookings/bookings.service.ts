@@ -7,12 +7,15 @@ import {
 } from '@nestjs/common';
 import {
   BookingStatus,
+  ContactUnlockTargetType,
   ServiceStatus,
   type Booking,
   type User,
 } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { BiddingGateway } from '../bidding/bidding.gateway.js';
+import { TokensService } from '../tokens/tokens.service.js';
 import type { CreateBookingDto } from './dto/create-booking.dto.js';
 
 export type BookingResponse = {
@@ -22,7 +25,8 @@ export type BookingResponse = {
   serviceTitle: string;
   seekerId: string;
   seekerName: string;
-  seekerPhone: string;
+  seekerPhone: string | null;
+  contactUnlocked: boolean;
   address: string;
   lat: number;
   lng: number;
@@ -38,7 +42,11 @@ type BookingWithSeeker = Booking & { seeker: User };
 
 @Injectable()
 export class BookingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tokensService: TokensService,
+    private readonly biddingGateway: BiddingGateway,
+  ) {}
 
   async create(
     dto: CreateBookingDto,
@@ -70,23 +78,54 @@ export class BookingsService {
       throw new UnauthorizedException('Seeker account not found.');
     }
 
-    const booking = await this.prisma.booking.create({
-      data: {
-        serviceId: service.id,
-        providerId: service.providerId,
-        seekerId: seeker.id,
-        serviceTitle: service.title,
-        address: dto.address.trim(),
-        lat: dto.lat,
-        lng: dto.lng,
-        requestedAt,
-        note: dto.note?.trim() ?? '',
-        status: BookingStatus.PENDING,
-      },
-      include: { seeker: true },
+    const result = await this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.create({
+        data: {
+          serviceId: service.id,
+          providerId: service.providerId,
+          seekerId: seeker.id,
+          serviceTitle: service.title,
+          address: dto.address.trim(),
+          lat: dto.lat,
+          lng: dto.lng,
+          requestedAt,
+          note: dto.note?.trim() ?? '',
+          status: BookingStatus.PENDING,
+        },
+        include: { seeker: true },
+      });
+
+      const seekerName = seeker.name.trim() || 'A seeker';
+      const notification = await tx.notification.create({
+        data: {
+          providerId: service.providerId,
+          type: 'booking_request',
+          title: 'New booking request',
+          body: `${seekerName} requested “${service.title}”.`,
+          href: `/provider/bookings/${booking.id}`,
+        },
+      });
+
+      return { booking, notification };
     });
 
-    return this.toResponse(booking);
+    const seekerResponse = this.toResponse(result.booking, true);
+    const providerResponse = this.toResponse(result.booking, false);
+    this.biddingGateway.emitBookingCreated(service.providerId, {
+      booking: providerResponse,
+      notification: {
+        id: result.notification.id,
+        providerId: result.notification.providerId,
+        type: result.notification.type,
+        title: result.notification.title,
+        body: result.notification.body,
+        href: result.notification.href,
+        read: result.notification.read,
+        createdAt: result.notification.createdAt.toISOString(),
+      },
+    });
+
+    return seekerResponse;
   }
 
   async findMineAsSeeker(userId: string): Promise<BookingResponse[]> {
@@ -95,7 +134,7 @@ export class BookingsService {
       include: { seeker: true },
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row) => this.toResponse(row));
+    return rows.map((row) => this.toResponse(row, true));
   }
 
   async findMineAsProvider(userId: string): Promise<BookingResponse[]> {
@@ -105,12 +144,17 @@ export class BookingsService {
       include: { seeker: true },
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row) => this.toResponse(row));
+    const unlocked = await this.tokensService.unlockedTargetIds(
+      provider.id,
+      ContactUnlockTargetType.BOOKING,
+      rows.map((row) => row.id),
+    );
+    return rows.map((row) => this.toResponse(row, unlocked.has(row.id)));
   }
 
   /**
-   * Marks accepted bookings as seen when the provider opens the Bookings list
-   * (or specific detail). Clears the Bookings-tab unread badge.
+   * Marks pending / negotiating / accepted bookings as seen when the provider
+   * opens the Bookings list (or specific detail). Clears the Bookings-tab badge.
    */
   async markSeenAsProvider(
     userId: string,
@@ -124,7 +168,13 @@ export class BookingsService {
     const where = {
       providerId: provider.id,
       providerViewedAt: null,
-      status: BookingStatus.ACCEPTED,
+      status: {
+        in: [
+          BookingStatus.PENDING,
+          BookingStatus.NEGOTIATING,
+          BookingStatus.ACCEPTED,
+        ],
+      },
       ...(ids.length > 0 ? { id: { in: ids } } : {}),
     };
 
@@ -166,8 +216,9 @@ export class BookingsService {
     }
     await this.assertCanView(booking, user);
 
+    let row = booking;
     if (user.role === 'PROVIDER' && booking.providerViewedAt === null) {
-      const viewed = await this.prisma.booking.update({
+      row = await this.prisma.booking.update({
         where: { id: booking.id },
         data: { providerViewedAt: new Date() },
         include: { seeker: true },
@@ -180,10 +231,10 @@ export class BookingsService {
         },
         data: { read: true },
       });
-      return this.toResponse(viewed);
     }
 
-    return this.toResponse(booking);
+    const unlocked = await this.resolveContactUnlocked(row, user);
+    return this.toResponse(row, unlocked);
   }
 
   async withdraw(
@@ -211,8 +262,26 @@ export class BookingsService {
       throw new ForbiddenException('You can only withdraw your own requests.');
     }
 
-    await this.prisma.booking.delete({ where: { id } });
-    return { id, deleted: true };
+    const providerId = booking.providerId;
+    const bookingId = booking.id;
+    const href = `/provider/bookings/${bookingId}`;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.booking.delete({ where: { id: bookingId } });
+      await tx.notification.deleteMany({
+        where: {
+          providerId,
+          href,
+        },
+      });
+    });
+
+    this.biddingGateway.emitBookingWithdrawn(providerId, {
+      bookingId,
+      providerId,
+    });
+
+    return { id: bookingId, deleted: true };
   }
 
   async updateStatus(
@@ -263,7 +332,27 @@ export class BookingsService {
       data: { status },
       include: { seeker: true },
     });
-    return this.toResponse(booking);
+    const unlocked = await this.tokensService.hasUnlock(
+      provider.id,
+      ContactUnlockTargetType.BOOKING,
+      booking.id,
+    );
+    return this.toResponse(booking, unlocked);
+  }
+
+  private async resolveContactUnlocked(
+    booking: Booking,
+    user: JwtPayload,
+  ): Promise<boolean> {
+    if (user.role !== 'PROVIDER') {
+      return true;
+    }
+    const provider = await this.requireProvider(user.sub);
+    return this.tokensService.hasUnlock(
+      provider.id,
+      ContactUnlockTargetType.BOOKING,
+      booking.id,
+    );
   }
 
   private async assertCanView(booking: Booking, user: JwtPayload) {
@@ -293,7 +382,10 @@ export class BookingsService {
     return provider;
   }
 
-  private toResponse(booking: BookingWithSeeker): BookingResponse {
+  private toResponse(
+    booking: BookingWithSeeker,
+    contactUnlocked: boolean,
+  ): BookingResponse {
     return {
       id: booking.id,
       serviceId: booking.serviceId,
@@ -301,7 +393,8 @@ export class BookingsService {
       serviceTitle: booking.serviceTitle,
       seekerId: booking.seekerId,
       seekerName: booking.seeker.name,
-      seekerPhone: booking.seeker.phone,
+      seekerPhone: contactUnlocked ? booking.seeker.phone : null,
+      contactUnlocked,
       address: booking.address,
       lat: booking.lat,
       lng: booking.lng,

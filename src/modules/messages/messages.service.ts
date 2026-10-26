@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import {
+  ContactUnlockTargetType,
   MessageSenderRole,
   type Message,
   type MessageReadState,
@@ -17,6 +18,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { TokensService } from '../tokens/tokens.service.js';
 import type { DeliverMessagesDto } from './dto/deliver-messages.dto.js';
 import type { EditMessageDto } from './dto/edit-message.dto.js';
 import type { ListMessagesQueryDto } from './dto/list-messages-query.dto.js';
@@ -101,6 +103,7 @@ export class MessagesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: MessagesGateway,
+    private readonly tokensService: TokensService,
   ) {}
 
   async listThreads(
@@ -237,6 +240,7 @@ export class MessagesService {
   ): Promise<MessageDto> {
     const actor = await this.resolveActor(user);
     const thread = await this.requireThreadAccess(threadId, actor);
+    await this.assertBookingThreadContactUnlocked(thread, actor);
     const body = (dto.body ?? '').trim();
     const attachments = this.normalizeAttachments(dto.attachments);
     if (!body && attachments.length === 0) {
@@ -612,6 +616,13 @@ export class MessagesService {
       throw new ForbiddenException('Not your booking.');
     }
 
+    if (actor.role === 'provider') {
+      await this.tokensService.assertBookingContactUnlocked(
+        booking.providerId,
+        booking.id,
+      );
+    }
+
     let thread = await this.prisma.messageThread.findUnique({
       where: { bookingId: booking.id },
       include: threadInclude,
@@ -633,6 +644,38 @@ export class MessagesService {
     await this.broadcastThread(thread);
     const [dto] = await this.attachUnreadCounts([thread], actor);
     return dto!;
+  }
+
+  /**
+   * Booking chat stays locked for both sides until the provider spends a token.
+   * Seekers may open/view an existing thread but cannot send.
+   */
+  private async assertBookingThreadContactUnlocked(
+    thread: MessageThread,
+    actor: Actor,
+  ): Promise<void> {
+    if (!thread.bookingId) return;
+
+    const unlocked = await this.tokensService.hasUnlock(
+      thread.providerId,
+      ContactUnlockTargetType.BOOKING,
+      thread.bookingId,
+    );
+    if (unlocked) return;
+
+    if (actor.role === 'provider') {
+      throw new ForbiddenException({
+        statusCode: 403,
+        message: 'Unlock seeker contact with 1 token to chat.',
+        code: 'CONTACT_LOCKED',
+      });
+    }
+
+    throw new ForbiddenException({
+      statusCode: 403,
+      message: 'Waiting for the provider to unlock contact before chatting.',
+      code: 'CONTACT_LOCKED',
+    });
   }
 
   private async openForServiceInquiry(
