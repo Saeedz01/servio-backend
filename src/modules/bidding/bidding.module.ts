@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { JobMatchingModule } from '../jobs/job-matching.module.js';
 import { TokensModule } from '../tokens/tokens.module.js';
 import { BiddingController } from './bidding.controller.js';
 import { BiddingGateway } from './bidding.gateway.js';
@@ -8,6 +9,7 @@ import { BiddingService } from './bidding.service.js';
 
 @Module({
   imports: [
+    JobMatchingModule,
     TokensModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

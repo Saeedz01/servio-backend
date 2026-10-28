@@ -3,6 +3,7 @@ import {
   IsDateString,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
@@ -21,6 +22,12 @@ export class CreateJobDto {
   @IsNotEmpty()
   @MaxLength(5000)
   description!: string;
+
+  /** Required when category is Other Services. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  specialty?: string;
 
   /** When the seeker needs the work done. */
   @IsDateString()

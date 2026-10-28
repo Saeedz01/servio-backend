@@ -52,6 +52,7 @@ export type BookingCreatedPayload = {
 
 export type JobCreatedPayload = {
   job: JobResponse;
+  matchKind: 'exact' | 'also_relevant';
 };
 
 export type BookingWithdrawnPayload = {
@@ -103,9 +104,20 @@ export class BiddingGateway implements OnGatewayConnection {
       .emit('booking:created', payload);
   }
 
-  /** Instant open-job alert for providers watching this category. */
-  emitJobCreated(categoryId: string, payload: JobCreatedPayload) {
-    this.server.to(this.categoryRoom(categoryId)).emit('job:created', payload);
+  /**
+   * Instant open-job alert for each matching provider (exact or also_relevant).
+   * Emits once per provider room to avoid duplicates.
+   */
+  emitJobCreated(
+    matches: Array<{ providerId: string; matchKind: 'exact' | 'also_relevant' }>,
+    payload: { job: JobResponse },
+  ) {
+    for (const match of matches) {
+      this.server.to(this.providerRoom(match.providerId)).emit('job:created', {
+        job: payload.job,
+        matchKind: match.matchKind,
+      } satisfies JobCreatedPayload);
+    }
   }
 
   /** Seeker withdrew a request — remove it from the provider’s list instantly. */

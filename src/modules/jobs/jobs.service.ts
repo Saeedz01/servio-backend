@@ -8,7 +8,6 @@ import {
 import {
   ContactUnlockTargetType,
   JobStatus,
-  ServiceStatus,
   type Job,
   type ServiceCategory,
   type User,
@@ -18,6 +17,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { BiddingGateway } from '../bidding/bidding.gateway.js';
 import { TokensService } from '../tokens/tokens.service.js';
 import type { CreateJobDto } from './dto/create-job.dto.js';
+import { JobMatchingService } from './job-matching.service.js';
 
 export type JobResponse = {
   id: string;
@@ -30,6 +30,7 @@ export type JobResponse = {
   contactUnlocked: boolean;
   title: string;
   description: string;
+  specialty: string | null;
   address: string;
   lat: number;
   lng: number;
@@ -37,6 +38,11 @@ export type JobResponse = {
   status: 'open' | 'awarded' | 'closed';
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProviderJobFeedResponse = {
+  matched: JobResponse[];
+  alsoRelevant: JobResponse[];
 };
 
 type JobWithRelations = Job & {
@@ -50,6 +56,7 @@ export class JobsService {
     private readonly prisma: PrismaService,
     private readonly tokensService: TokensService,
     private readonly biddingGateway: BiddingGateway,
+    private readonly jobMatching: JobMatchingService,
   ) {}
 
   async create(dto: CreateJobDto, user: JwtPayload): Promise<JobResponse> {
@@ -63,6 +70,11 @@ export class JobsService {
     if (!category) {
       throw new BadRequestException('Select a valid service category.');
     }
+
+    const specialty = this.requireSpecialtyIfOther(
+      category.slug,
+      dto.specialty,
+    );
 
     const requestedAt = new Date(dto.requestedAt);
     if (Number.isNaN(requestedAt.getTime())) {
@@ -85,6 +97,7 @@ export class JobsService {
         seekerId: seeker.id,
         title: dto.title.trim(),
         description: dto.description.trim(),
+        specialty,
         address: dto.address.trim(),
         lat: dto.lat,
         lng: dto.lng,
@@ -95,10 +108,20 @@ export class JobsService {
     });
 
     const seekerResponse = this.toResponse(job, true);
-    // Providers receive a locked contact view over the socket.
-    this.biddingGateway.emitJobCreated(category.id, {
-      job: this.toResponse(job, false),
+    const lockedJob = this.toResponse(job, false);
+    const matches = await this.jobMatching.providerMatchesForJob({
+      id: job.id,
+      categoryId: job.categoryId,
+      title: job.title,
+      description: job.description,
+      specialty: job.specialty,
+      category: {
+        id: job.category.id,
+        slug: job.category.slug,
+        keywords: job.category.keywords,
+      },
     });
+    this.biddingGateway.emitJobCreated(matches, { job: lockedJob });
 
     return seekerResponse;
   }
@@ -113,30 +136,41 @@ export class JobsService {
   }
 
   /**
-   * Open jobs whose category matches at least one of the provider's
-   * published (active) services.
+   * Open jobs partitioned into exact category matches and keyword-relevant ones.
    */
-  async findFeedForProvider(userId: string): Promise<JobResponse[]> {
+  async findFeedForProvider(
+    userId: string,
+  ): Promise<ProviderJobFeedResponse> {
     const provider = await this.requireProvider(userId);
-    const categoryIds = await this.publishedCategoryIds(provider.id);
-    if (categoryIds.length === 0) {
-      return [];
+    const { matchedIds, alsoRelevantIds } =
+      await this.jobMatching.partitionOpenJobsForProvider(provider.id);
+
+    if (matchedIds.length === 0 && alsoRelevantIds.length === 0) {
+      return { matched: [], alsoRelevant: [] };
     }
 
+    const allIds = [...matchedIds, ...alsoRelevantIds];
     const rows = await this.prisma.job.findMany({
-      where: {
-        status: JobStatus.OPEN,
-        categoryId: { in: categoryIds },
-      },
+      where: { id: { in: allIds } },
       include: { seeker: true, category: true },
-      orderBy: { createdAt: 'desc' },
     });
+    const byId = new Map(rows.map((row) => [row.id, row]));
     const unlocked = await this.tokensService.unlockedTargetIds(
       provider.id,
       ContactUnlockTargetType.JOB,
-      rows.map((row) => row.id),
+      allIds,
     );
-    return rows.map((row) => this.toResponse(row, unlocked.has(row.id)));
+
+    const mapIds = (ids: string[]) =>
+      ids
+        .map((id) => byId.get(id))
+        .filter((row): row is JobWithRelations => Boolean(row))
+        .map((row) => this.toResponse(row, unlocked.has(row.id)));
+
+    return {
+      matched: mapIds(matchedIds),
+      alsoRelevant: mapIds(alsoRelevantIds),
+    };
   }
 
   async findOne(id: string, user: JwtPayload): Promise<JobResponse> {
@@ -185,7 +219,7 @@ export class JobsService {
     return this.toResponse(job, true);
   }
 
-  private async assertCanView(job: Job, user: JwtPayload) {
+  private async assertCanView(job: JobWithRelations, user: JwtPayload) {
     if (user.role === 'SEEKER') {
       if (job.seekerId !== user.sub) {
         throw new ForbiddenException('You can only view your own jobs.');
@@ -194,13 +228,26 @@ export class JobsService {
     }
     if (user.role === 'PROVIDER') {
       const provider = await this.requireProvider(user.sub);
-      const categoryIds = await this.publishedCategoryIds(provider.id);
-      if (
-        job.status !== JobStatus.OPEN ||
-        !categoryIds.includes(job.categoryId)
-      ) {
+      if (job.status !== JobStatus.OPEN) {
         throw new ForbiddenException(
-          'This job is not available for your published service categories.',
+          'This job is not available for your published services.',
+        );
+      }
+      const kind = await this.jobMatching.matchKindForProvider(provider.id, {
+        id: job.id,
+        categoryId: job.categoryId,
+        title: job.title,
+        description: job.description,
+        specialty: job.specialty,
+        category: {
+          id: job.category.id,
+          slug: job.category.slug,
+          keywords: job.category.keywords,
+        },
+      });
+      if (!kind) {
+        throw new ForbiddenException(
+          'This job is not available for your published services.',
         );
       }
       return;
@@ -208,16 +255,20 @@ export class JobsService {
     throw new ForbiddenException('Not allowed to view this job.');
   }
 
-  private async publishedCategoryIds(providerId: string): Promise<string[]> {
-    const services = await this.prisma.service.findMany({
-      where: {
-        providerId,
-        status: ServiceStatus.PUBLISHED,
-      },
-      select: { categoryId: true },
-      distinct: ['categoryId'],
-    });
-    return services.map((service) => service.categoryId);
+  private requireSpecialtyIfOther(
+    categorySlug: string,
+    rawSpecialty?: string,
+  ): string | null {
+    const specialty = rawSpecialty?.trim() || null;
+    if (categorySlug === 'other-services') {
+      if (!specialty) {
+        throw new BadRequestException(
+          'Describe your specialty when selecting Other Services.',
+        );
+      }
+      return specialty;
+    }
+    return specialty;
   }
 
   private async requireProvider(userId: string) {
@@ -245,6 +296,7 @@ export class JobsService {
       contactUnlocked,
       title: job.title,
       description: job.description,
+      specialty: job.specialty,
       address: job.address,
       lat: job.lat,
       lng: job.lng,

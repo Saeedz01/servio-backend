@@ -21,6 +21,7 @@ export type ServiceResponse = {
   categoryId: string;
   title: string;
   description: string;
+  specialty: string | null;
   imageUrl: string;
   address: string;
   lat: number;
@@ -45,6 +46,7 @@ export type ServiceCategoryResponse = {
   name: string;
   slug: string;
   description: string | null;
+  keywords: string[];
   isActive: boolean;
 };
 
@@ -74,6 +76,7 @@ export class ServicesService {
         name: true,
         slug: true,
         description: true,
+        keywords: true,
         isActive: true,
       },
     });
@@ -90,14 +93,19 @@ export class ServicesService {
   async create(userId: string, dto: CreateServiceDto): Promise<ServiceResponse> {
     const provider = await this.requireProvider(userId);
     const status = this.resolveCreateStatus(provider.user.status, dto.status);
-    const categoryId = await this.requireActiveCategoryId(dto.categoryId);
+    const category = await this.requireActiveCategory(dto.categoryId);
+    const specialty = this.requireSpecialtyIfOther(
+      category.slug,
+      dto.specialty,
+    );
 
     const service = await this.prisma.service.create({
       data: {
         providerId: provider.id,
-        categoryId,
+        categoryId: category.id,
         title: dto.title.trim(),
         description: dto.description.trim(),
+        specialty,
         imageUrl: dto.imageUrl,
         address: dto.address.trim(),
         lat: dto.lat,
@@ -167,19 +175,25 @@ export class ServicesService {
       );
     }
 
-    const categoryId =
-      dto.categoryId !== undefined
-        ? await this.requireActiveCategoryId(dto.categoryId)
+    const nextCategoryId = dto.categoryId ?? existing.categoryId;
+    const category = await this.requireActiveCategory(nextCategoryId);
+    const specialty =
+      dto.specialty !== undefined || dto.categoryId !== undefined
+        ? this.requireSpecialtyIfOther(
+            category.slug,
+            dto.specialty !== undefined ? dto.specialty : existing.specialty ?? undefined,
+          )
         : undefined;
 
     const service = await this.prisma.service.update({
       where: { id },
       data: {
-        ...(categoryId !== undefined ? { categoryId } : {}),
+        ...(dto.categoryId !== undefined ? { categoryId: category.id } : {}),
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
         ...(dto.description !== undefined
           ? { description: dto.description.trim() }
           : {}),
+        ...(specialty !== undefined ? { specialty } : {}),
         ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl } : {}),
         ...(dto.address !== undefined ? { address: dto.address.trim() } : {}),
         ...(dto.lat !== undefined ? { lat: dto.lat } : {}),
@@ -228,16 +242,32 @@ export class ServicesService {
     return provider;
   }
 
-  private async requireActiveCategoryId(rawCategoryId: string) {
+  private async requireActiveCategory(rawCategoryId: string) {
     const categoryId = rawCategoryId.trim();
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: categoryId, isActive: true },
-      select: { id: true },
+      select: { id: true, slug: true },
     });
     if (!category) {
       throw new BadRequestException('Select a valid service category.');
     }
-    return category.id;
+    return category;
+  }
+
+  private requireSpecialtyIfOther(
+    categorySlug: string,
+    rawSpecialty?: string,
+  ): string | null {
+    const specialty = rawSpecialty?.trim() || null;
+    if (categorySlug === 'other-services') {
+      if (!specialty) {
+        throw new BadRequestException(
+          'Describe your specialty when selecting Other Services.',
+        );
+      }
+      return specialty;
+    }
+    return specialty;
   }
 
   private resolveCreateStatus(
@@ -261,6 +291,7 @@ export class ServicesService {
       categoryId: service.categoryId,
       title: service.title,
       description: service.description,
+      specialty: service.specialty,
       imageUrl: service.imageUrl,
       address: service.address,
       lat: service.lat,

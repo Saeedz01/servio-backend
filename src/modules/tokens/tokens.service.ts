@@ -8,12 +8,12 @@ import {
 import {
   ContactUnlockTargetType,
   JobStatus,
-  ServiceStatus,
   TokenLedgerType,
   type Prisma,
 } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { JobMatchingService } from '../jobs/job-matching.service.js';
 import {
   MONTHLY_TOKEN_GRANT,
   UNLOCK_TOKEN_COST,
@@ -39,7 +39,10 @@ export type UnlockContactResponse = {
 
 @Injectable()
 export class TokensService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jobMatching: JobMatchingService,
+  ) {}
 
   async getMyBalance(user: JwtPayload): Promise<TokenBalanceResponse> {
     const provider = await this.requireProvider(user);
@@ -316,7 +319,17 @@ export class TokensService {
 
     const job = await this.prisma.job.findUnique({
       where: { id: targetId },
-      select: { id: true, status: true, categoryId: true },
+      select: {
+        id: true,
+        status: true,
+        categoryId: true,
+        title: true,
+        description: true,
+        specialty: true,
+        category: {
+          select: { id: true, slug: true, keywords: true },
+        },
+      },
     });
     if (!job) {
       throw new NotFoundException('Job not found.');
@@ -325,17 +338,10 @@ export class TokensService {
       throw new ForbiddenException('Only open jobs can be unlocked.');
     }
 
-    const published = await this.prisma.service.findFirst({
-      where: {
-        providerId,
-        status: ServiceStatus.PUBLISHED,
-        categoryId: job.categoryId,
-      },
-      select: { id: true },
-    });
-    if (!published) {
+    const kind = await this.jobMatching.matchKindForProvider(providerId, job);
+    if (!kind) {
       throw new ForbiddenException(
-        'This job is not available for your published service categories.',
+        'This job is not available for your published services.',
       );
     }
   }

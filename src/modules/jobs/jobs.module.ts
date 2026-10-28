@@ -3,11 +3,13 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { BiddingModule } from '../bidding/bidding.module.js';
 import { TokensModule } from '../tokens/tokens.module.js';
+import { JobMatchingModule } from './job-matching.module.js';
 import { JobsController } from './jobs.controller.js';
 import { JobsService } from './jobs.service.js';
 
 @Module({
   imports: [
+    JobMatchingModule,
     TokensModule,
     BiddingModule,
     JwtModule.registerAsync({

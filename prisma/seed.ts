@@ -18,11 +18,13 @@ async function ensureServiceCategories() {
         name: category.name,
         slug: category.slug,
         description: category.description,
+        keywords: category.keywords ?? [],
         isActive: true,
       },
       update: {
         name: category.name,
         description: category.description,
+        keywords: category.keywords ?? [],
         isActive: true,
       },
     });

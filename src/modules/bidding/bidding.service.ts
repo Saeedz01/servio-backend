@@ -12,7 +12,6 @@ import {
   BookingStatus,
   ContactUnlockTargetType,
   JobStatus,
-  ServiceStatus,
   type Bidding,
   type Job,
   type Provider,
@@ -22,6 +21,7 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator.
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { BookingResponse } from '../bookings/bookings.service.js';
 import type { NotificationResponse } from '../notifications/notifications.service.js';
+import { JobMatchingService } from '../jobs/job-matching.service.js';
 import { TokensService } from '../tokens/tokens.service.js';
 import { BiddingGateway } from './bidding.gateway.js';
 import type { CreateBiddingDto } from './dto/create-bidding.dto.js';
@@ -56,6 +56,7 @@ export class BiddingService {
     private readonly prisma: PrismaService,
     private readonly biddingGateway: BiddingGateway,
     private readonly tokensService: TokensService,
+    private readonly jobMatching: JobMatchingService,
   ) {}
 
   async create(
@@ -69,12 +70,25 @@ export class BiddingService {
     const provider = await this.requireVerifiedProvider(user.sub);
     const job = await this.prisma.job.findUnique({
       where: { id: dto.jobId.trim() },
+      include: {
+        category: { select: { id: true, slug: true, keywords: true } },
+      },
     });
     if (!job) {
       throw new NotFoundException('Job not found.');
     }
     if (job.status !== JobStatus.OPEN) {
       throw new BadRequestException('This job is no longer open for bids.');
+    }
+
+    const accessKind = await this.jobMatching.matchKindForProvider(
+      provider.id,
+      job,
+    );
+    if (!accessKind) {
+      throw new ForbiddenException(
+        'This job is not available for your published services.',
+      );
     }
 
     const price = Number(dto.price);
@@ -139,19 +153,27 @@ export class BiddingService {
       throw new BadRequestException('This bid is no longer available.');
     }
 
-    const service = await this.prisma.service.findFirst({
-      where: {
-        providerId: bid.providerId,
-        categoryId: bid.job.categoryId,
-        status: ServiceStatus.PUBLISHED,
+    const jobWithCategory = await this.prisma.job.findUnique({
+      where: { id: bid.jobId },
+      include: {
+        category: { select: { id: true, slug: true, keywords: true } },
       },
-      orderBy: { updatedAt: 'desc' },
     });
-    if (!service) {
+    if (!jobWithCategory) {
+      throw new NotFoundException('Job not found.');
+    }
+    const matchedService = await this.jobMatching.pickBookableServiceForProvider(
+      bid.providerId,
+      jobWithCategory,
+    );
+    if (!matchedService) {
       throw new BadRequestException(
-        'This provider has no published service in this category to book against.',
+        'This provider has no published service that can cover this job.',
       );
     }
+    const service = await this.prisma.service.findUniqueOrThrow({
+      where: { id: matchedService.id },
+    });
 
     const seeker = await this.prisma.user.findUnique({
       where: { id: bid.job.seekerId },

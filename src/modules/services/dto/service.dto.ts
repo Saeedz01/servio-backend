@@ -9,6 +9,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -46,6 +47,12 @@ export class CreateServiceDto {
   @IsString()
   @IsNotEmpty()
   description!: string;
+
+  /** Required when category is Other Services. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  specialty?: string;
 
   @IsString()
   @IsNotEmpty()
@@ -104,6 +111,11 @@ export class UpdateServiceDto {
   @IsString()
   @IsNotEmpty()
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  specialty?: string;
 
   @IsOptional()
   @IsString()
