@@ -1,7 +1,7 @@
-import { RequestMethod, ValidationPipe } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { json, urlencoded } from 'express';
+import { json, urlencoded, type Request, type Response } from 'express';
 import { AppModule, ObserveInstrument } from './app.module.js';
 import { parseFrontendOrigins } from './common/cors-origins.js';
 
@@ -36,9 +36,14 @@ async function bootstrap() {
     }),
   );
 
-  app.setGlobalPrefix('api', {
-    exclude: [{ path: '/', method: RequestMethod.GET }],
+  // Global prefix puts Nest controllers under /api. Keep a plain root
+  // health check so visiting the deployment URL is not "Cannot GET /".
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.get('/', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', service: 'servio-backend', docs: '/api' });
   });
+
+  app.setGlobalPrefix('api');
 
   // Vercel captures listen() during module load — use PORT from the runtime.
   const port = Number(process.env.PORT) || 3001;
