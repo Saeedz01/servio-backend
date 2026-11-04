@@ -5,8 +5,9 @@ import { AppService } from './app.service.js';
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
+  /** Also available at `/api` via global prefix. */
   @Get()
-  getHello(): string {
-    return this.appService.getHello();
+  getHello(): { status: string; service: string; docs: string } {
+    return this.appService.getStatus();
   }
 }
