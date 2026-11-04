@@ -15,17 +15,26 @@ import { PrismaModule } from './prisma/prisma.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
+const observeEnabled =
+  Boolean(process.env.OBSERVE_APP_KEY) &&
+  Boolean(process.env.OBSERVE_APP_SECRET) &&
+  process.env.OBSERVE_APP_KEY !== 'YOUR_APP_KEY';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
     }),
-    ObserveModule.forRoot({
-      appKey: 'YOUR_APP_KEY',
-      appSecret: 'YOUR_APP_SECRET',
-      serviceId: 'servio-backend',
-    }),
+    ...(observeEnabled
+      ? [
+          ObserveModule.forRoot({
+            appKey: process.env.OBSERVE_APP_KEY!,
+            appSecret: process.env.OBSERVE_APP_SECRET!,
+            serviceId: 'servio-backend',
+          }),
+        ]
+      : []),
     PrismaModule,
     AuthModule,
     ServicesModule,

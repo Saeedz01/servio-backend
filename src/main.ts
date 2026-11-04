@@ -6,8 +6,13 @@ import { AppModule, ObserveInstrument } from './app.module.js';
 import { parseFrontendOrigins } from './common/cors-origins.js';
 
 async function bootstrap() {
+  const useObserve =
+    Boolean(process.env.OBSERVE_APP_KEY) &&
+    Boolean(process.env.OBSERVE_APP_SECRET) &&
+    process.env.OBSERVE_APP_KEY !== 'YOUR_APP_KEY';
+
   const app = await NestFactory.create(AppModule, {
-    instrument: ObserveInstrument,
+    ...(useObserve ? { instrument: ObserveInstrument } : {}),
     // Custom parsers below — needed for provider ID data-URL uploads
     bodyParser: false,
   });
@@ -33,8 +38,9 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
 
-  const port = config.get<number>('PORT', 3001);
+  // Vercel captures listen() during module load — use PORT from the runtime.
+  const port = Number(process.env.PORT) || 3001;
   await app.listen(port);
 }
 
-await bootstrap();
+void bootstrap();
