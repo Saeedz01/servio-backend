@@ -11,6 +11,7 @@ import {
 } from '@nestjs/websockets';
 import type { MessageThread } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
+import { parseFrontendOrigins } from '../../common/cors-origins.js';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { MessageDto, MessageThreadDto } from './messages.service.js';
@@ -33,7 +34,7 @@ type ActorRole = 'seeker' | 'provider' | 'admin';
 @WebSocketGateway({
   namespace: '/messages',
   cors: {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: parseFrontendOrigins(),
     credentials: true,
   },
 })

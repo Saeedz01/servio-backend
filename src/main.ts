@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import { AppModule, ObserveInstrument } from './app.module.js';
+import { parseFrontendOrigins } from './common/cors-origins.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -16,13 +17,9 @@ async function bootstrap() {
   app.use(urlencoded({ extended: true, limit: '15mb' }));
 
   const config = app.get(ConfigService);
-  const frontendUrl = config.get<string>(
-    'FRONTEND_URL',
-    'http://localhost:3000',
-  );
 
   app.enableCors({
-    origin: frontendUrl,
+    origin: parseFrontendOrigins(config.get<string>('FRONTEND_URL')),
     credentials: true,
   });
 

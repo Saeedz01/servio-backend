@@ -11,6 +11,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { ServiceStatus } from '@prisma/client';
+import { parseFrontendOrigins } from '../../common/cors-origins.js';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { BookingResponse } from '../bookings/bookings.service.js';
@@ -63,7 +64,7 @@ export type BookingWithdrawnPayload = {
 @WebSocketGateway({
   namespace: '/bidding',
   cors: {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: parseFrontendOrigins(),
     credentials: true,
   },
 })
