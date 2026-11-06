@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -21,8 +22,11 @@ export class ServicesController {
   constructor(private readonly servicesService: ServicesService) {}
 
   @Get('published')
-  findPublished() {
-    return this.servicesService.findPublished();
+  findPublished(
+    @Query('cityId') cityId?: string,
+    @Query('categoryId') categoryId?: string,
+  ) {
+    return this.servicesService.findPublished({ cityId, categoryId });
   }
 
   @UseGuards(JwtAuthGuard)

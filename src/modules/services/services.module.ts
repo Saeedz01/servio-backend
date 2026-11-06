@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ServiceCategoriesController } from './service-categories.controller.js';
+import { ServiceCitiesController } from './service-cities.controller.js';
 import { ServicesController } from './services.controller.js';
 import { ServicesService } from './services.service.js';
 
@@ -21,7 +22,11 @@ import { ServicesService } from './services.service.js';
       },
     }),
   ],
-  controllers: [ServicesController, ServiceCategoriesController],
+  controllers: [
+    ServicesController,
+    ServiceCategoriesController,
+    ServiceCitiesController,
+  ],
   providers: [ServicesService],
   exports: [ServicesService],
 })

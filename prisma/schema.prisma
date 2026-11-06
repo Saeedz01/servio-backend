@@ -163,6 +163,19 @@ model ContactUnlock {
   @@map("contact_unlocks")
 }
 
+model ServiceCity {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  services Service[]
+
+  @@map("service_cities")
+}
+
 model ServiceCategory {
   id          String   @id @default(uuid())
   name        String   @unique
@@ -170,12 +183,17 @@ model ServiceCategory {
   description String?
   keywords    String[] @default([])
   isActive    Boolean  @default(true) @map("is_active")
+  /** Null for root marketplace categories; set for subcategories. */
+  parentId    String?  @map("parent_id")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  parent   ServiceCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children ServiceCategory[] @relation("CategoryHierarchy")
   services Service[]
   jobs     Job[]
 
+  @@index([parentId])
   @@map("service_categories")
 }
 
@@ -183,6 +201,7 @@ model Service {
   id           String        @id @default(uuid())
   providerId   String        @map("provider_id")
   categoryId   String        @map("category_id")
+  cityId       String        @map("city_id")
   title        String
   description  String
   specialty    String?
@@ -200,11 +219,13 @@ model Service {
 
   provider Provider        @relation(fields: [providerId], references: [id], onDelete: Cascade)
   category ServiceCategory @relation(fields: [categoryId], references: [id])
+  city     ServiceCity     @relation(fields: [cityId], references: [id])
   bookings Booking[]
 
   @@index([providerId])
   @@index([status])
   @@index([categoryId])
+  @@index([cityId])
   @@map("services")
 }
 

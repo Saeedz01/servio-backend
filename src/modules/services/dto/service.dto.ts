@@ -42,6 +42,10 @@ export class CreateServiceDto {
 
   @IsString()
   @IsNotEmpty()
+  cityId!: string;
+
+  @IsString()
+  @IsNotEmpty()
   title!: string;
 
   @IsString()
@@ -101,6 +105,11 @@ export class UpdateServiceDto {
   @IsString()
   @IsNotEmpty()
   categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  cityId?: string;
 
   @IsOptional()
   @IsString()

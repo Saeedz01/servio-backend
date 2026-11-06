@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -13,12 +14,19 @@ import {
   type Service,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type {
+  CreateServiceCityDto,
+  UpdateServiceCityDto,
+} from './dto/city.dto.js';
 import type { CreateServiceDto, UpdateServiceDto } from './dto/service.dto.js';
 
 export type ServiceResponse = {
   id: string;
   providerId: string;
   categoryId: string;
+  categoryParentId: string | null;
+  cityId: string;
+  cityName?: string;
   title: string;
   description: string;
   specialty: string | null;
@@ -48,19 +56,42 @@ export type ServiceCategoryResponse = {
   description: string | null;
   keywords: string[];
   isActive: boolean;
+  parentId: string | null;
+};
+
+export type ServiceCityResponse = {
+  id: string;
+  name: string;
+  slug: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ServiceWithRelations = Service & {
+  provider: { user: { name: string } };
+  category?: { parentId: string | null };
+  city?: { name: string };
 };
 
 @Injectable()
 export class ServicesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findActiveCategories(
-    search?: string,
-  ): Promise<ServiceCategoryResponse[]> {
-    const query = search?.trim();
+  async findActiveCategories(opts?: {
+    search?: string;
+    parentId?: string;
+    rootsOnly?: boolean;
+  }): Promise<ServiceCategoryResponse[]> {
+    const query = opts?.search?.trim();
+    const parentId = opts?.parentId?.trim();
+    const rootsOnly = Boolean(opts?.rootsOnly);
+
     const categories = await this.prisma.serviceCategory.findMany({
       where: {
         isActive: true,
+        ...(rootsOnly ? { parentId: null } : {}),
+        ...(parentId ? { parentId } : {}),
         ...(query
           ? {
               OR: [
@@ -78,22 +109,108 @@ export class ServicesService {
         description: true,
         keywords: true,
         isActive: true,
+        parentId: true,
       },
     });
 
-    // Keep "Other Services" pinned at the bottom of the list.
+    // Keep "Other Services" pinned at the bottom of root lists.
     return categories.sort((a, b) => {
-      const aOther = a.slug === 'other-services' ? 1 : 0;
-      const bOther = b.slug === 'other-services' ? 1 : 0;
+      const aOther =
+        a.slug === 'other-services' || a.slug.startsWith('other-services-')
+          ? 1
+          : 0;
+      const bOther =
+        b.slug === 'other-services' || b.slug.startsWith('other-services-')
+          ? 1
+          : 0;
       if (aOther !== bOther) return aOther - bOther;
       return a.name.localeCompare(b.name);
     });
   }
 
+  async findCities(includeInactive = false): Promise<ServiceCityResponse[]> {
+    const cities = await this.prisma.serviceCity.findMany({
+      where: includeInactive ? undefined : { isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    return cities.map((city) => this.toCityResponse(city));
+  }
+
+  async createCity(dto: CreateServiceCityDto): Promise<ServiceCityResponse> {
+    const name = dto.name.trim();
+    if (!name) {
+      throw new BadRequestException('City name is required.');
+    }
+    const slug = this.slugify(name);
+    try {
+      const city = await this.prisma.serviceCity.create({
+        data: { name, slug, isActive: true },
+      });
+      return this.toCityResponse(city);
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('A city with that name already exists.');
+      }
+      throw error;
+    }
+  }
+
+  async updateCity(
+    id: string,
+    dto: UpdateServiceCityDto,
+  ): Promise<ServiceCityResponse> {
+    const existing = await this.prisma.serviceCity.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('City not found.');
+    }
+
+    const name = dto.name?.trim();
+    try {
+      const city = await this.prisma.serviceCity.update({
+        where: { id },
+        data: {
+          ...(name
+            ? {
+                name,
+                slug: this.slugify(name),
+              }
+            : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        },
+      });
+      return this.toCityResponse(city);
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('A city with that name already exists.');
+      }
+      throw error;
+    }
+  }
+
+  async removeCity(id: string): Promise<{ ok: true }> {
+    const existing = await this.prisma.serviceCity.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('City not found.');
+    }
+
+    const usage = await this.prisma.service.count({ where: { cityId: id } });
+    if (usage > 0) {
+      await this.prisma.serviceCity.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return { ok: true };
+    }
+
+    await this.prisma.serviceCity.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async create(userId: string, dto: CreateServiceDto): Promise<ServiceResponse> {
     const provider = await this.requireProvider(userId);
     const status = this.resolveCreateStatus(provider.user.status, dto.status);
-    const category = await this.requireActiveCategory(dto.categoryId);
+    const category = await this.requireLeafCategory(dto.categoryId);
+    const city = await this.requireActiveCity(dto.cityId);
     const specialty = this.requireSpecialtyIfOther(
       category.slug,
       dto.specialty,
@@ -103,6 +220,7 @@ export class ServicesService {
       data: {
         providerId: provider.id,
         categoryId: category.id,
+        cityId: city.id,
         title: dto.title.trim(),
         description: dto.description.trim(),
         specialty,
@@ -116,7 +234,11 @@ export class ServicesService {
         availability: dto.availability as unknown as Prisma.InputJsonValue,
         status,
       },
-      include: { provider: { include: { user: true } } },
+      include: {
+        provider: { include: { user: true } },
+        category: { select: { parentId: true } },
+        city: { select: { name: true } },
+      },
     });
 
     return this.toResponse(service);
@@ -126,16 +248,34 @@ export class ServicesService {
     const provider = await this.requireProvider(userId);
     const services = await this.prisma.service.findMany({
       where: { providerId: provider.id },
-      include: { provider: { include: { user: true } } },
+      include: {
+        provider: { include: { user: true } },
+        category: { select: { parentId: true } },
+        city: { select: { name: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return services.map((service) => this.toResponse(service));
   }
 
-  async findPublished(): Promise<ServiceResponse[]> {
+  async findPublished(filters?: {
+    cityId?: string;
+    categoryId?: string;
+  }): Promise<ServiceResponse[]> {
+    const cityId = filters?.cityId?.trim();
+    const categoryId = filters?.categoryId?.trim();
+
     const services = await this.prisma.service.findMany({
-      where: { status: ServiceStatus.PUBLISHED },
-      include: { provider: { include: { user: true } } },
+      where: {
+        status: ServiceStatus.PUBLISHED,
+        ...(cityId ? { cityId } : {}),
+        ...(categoryId ? { categoryId } : {}),
+      },
+      include: {
+        provider: { include: { user: true } },
+        category: { select: { parentId: true } },
+        city: { select: { name: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return services.map((service) => this.toResponse(service));
@@ -144,7 +284,11 @@ export class ServicesService {
   async findOne(id: string): Promise<ServiceResponse> {
     const service = await this.prisma.service.findUnique({
       where: { id },
-      include: { provider: { include: { user: true } } },
+      include: {
+        provider: { include: { user: true } },
+        category: { select: { parentId: true } },
+        city: { select: { name: true } },
+      },
     });
     if (!service) {
       throw new NotFoundException('Service not found.');
@@ -176,12 +320,16 @@ export class ServicesService {
     }
 
     const nextCategoryId = dto.categoryId ?? existing.categoryId;
-    const category = await this.requireActiveCategory(nextCategoryId);
+    const category = await this.requireLeafCategory(nextCategoryId);
+    const nextCityId = dto.cityId ?? existing.cityId;
+    const city = await this.requireActiveCity(nextCityId);
     const specialty =
       dto.specialty !== undefined || dto.categoryId !== undefined
         ? this.requireSpecialtyIfOther(
             category.slug,
-            dto.specialty !== undefined ? dto.specialty : existing.specialty ?? undefined,
+            dto.specialty !== undefined
+              ? dto.specialty
+              : (existing.specialty ?? undefined),
           )
         : undefined;
 
@@ -189,6 +337,7 @@ export class ServicesService {
       where: { id },
       data: {
         ...(dto.categoryId !== undefined ? { categoryId: category.id } : {}),
+        ...(dto.cityId !== undefined ? { cityId: city.id } : {}),
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
         ...(dto.description !== undefined
           ? { description: dto.description.trim() }
@@ -211,7 +360,11 @@ export class ServicesService {
           : {}),
         ...(dto.status !== undefined ? { status: dto.status } : {}),
       },
-      include: { provider: { include: { user: true } } },
+      include: {
+        provider: { include: { user: true } },
+        category: { select: { parentId: true } },
+        city: { select: { name: true } },
+      },
     });
 
     return this.toResponse(service);
@@ -242,16 +395,39 @@ export class ServicesService {
     return provider;
   }
 
-  private async requireActiveCategory(rawCategoryId: string) {
+  private async requireLeafCategory(rawCategoryId: string) {
     const categoryId = rawCategoryId.trim();
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: categoryId, isActive: true },
-      select: { id: true, slug: true },
+      select: {
+        id: true,
+        slug: true,
+        parentId: true,
+        _count: { select: { children: true } },
+      },
     });
     if (!category) {
       throw new BadRequestException('Select a valid service category.');
     }
+    const isLeaf = category.parentId !== null || category._count.children === 0;
+    if (!isLeaf) {
+      throw new BadRequestException(
+        'Select a subcategory for this service listing.',
+      );
+    }
     return category;
+  }
+
+  private async requireActiveCity(rawCityId: string) {
+    const cityId = rawCityId.trim();
+    const city = await this.prisma.serviceCity.findFirst({
+      where: { id: cityId, isActive: true },
+      select: { id: true, name: true, slug: true },
+    });
+    if (!city) {
+      throw new BadRequestException('Select a valid city.');
+    }
+    return city;
   }
 
   private requireSpecialtyIfOther(
@@ -259,7 +435,10 @@ export class ServicesService {
     rawSpecialty?: string,
   ): string | null {
     const specialty = rawSpecialty?.trim() || null;
-    if (categorySlug === 'other-services') {
+    const isOther =
+      categorySlug === 'other-services' ||
+      categorySlug.startsWith('other-services-');
+    if (isOther) {
       if (!specialty) {
         throw new BadRequestException(
           'Describe your specialty when selecting Other Services.',
@@ -280,15 +459,14 @@ export class ServicesService {
     return requested ?? ServiceStatus.DRAFT;
   }
 
-  private toResponse(
-    service: Service & {
-      provider: { user: { name: string } };
-    },
-  ): ServiceResponse {
+  private toResponse(service: ServiceWithRelations): ServiceResponse {
     return {
       id: service.id,
       providerId: service.providerId,
       categoryId: service.categoryId,
+      categoryParentId: service.category?.parentId ?? null,
+      cityId: service.cityId,
+      cityName: service.city?.name,
       title: service.title,
       description: service.description,
       specialty: service.specialty,
@@ -305,6 +483,42 @@ export class ServicesService {
       updatedAt: service.updatedAt.toISOString(),
       providerName: service.provider.user.name,
     };
+  }
+
+  private toCityResponse(city: {
+    id: string;
+    name: string;
+    slug: string;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }): ServiceCityResponse {
+    return {
+      id: city.id,
+      name: city.name,
+      slug: city.slug,
+      isActive: city.isActive,
+      createdAt: city.createdAt.toISOString(),
+      updatedAt: city.updatedAt.toISOString(),
+    };
+  }
+
+  private slugify(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80);
+  }
+
+  private isUniqueViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    );
   }
 
   private mapPriceUnit(unit: PriceUnit): ServiceResponse['priceUnit'] {
@@ -329,7 +543,9 @@ export class ServicesService {
     }
   }
 
-  private mapAvailability(value: Prisma.JsonValue): ServiceResponse['availability'] {
+  private mapAvailability(
+    value: Prisma.JsonValue,
+  ): ServiceResponse['availability'] {
     if (!Array.isArray(value)) return [];
     return value.map((slot) => {
       const item = slot as {

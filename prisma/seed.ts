@@ -2,13 +2,32 @@ import { AccountStatus, PrismaClient, RoleStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { ROLE_NAMES } from '../src/modules/auth/role.constants.js';
 import { SERVICE_CATEGORIES } from './seed-categories-data.js';
+import { SERVICE_CITIES } from './seed-cities-data.js';
 import { DEMO_PROVIDER_SERVICES } from './seed-services-data.js';
+import { SERVICE_SUBCATEGORIES } from './seed-subcategories-data.js';
 
 const prisma = new PrismaClient();
 
 const DEMO_ADMIN_PHONE = '03011111111';
 const DEMO_SEEKER_PHONE = '03022222222';
 const DEMO_PROVIDER_PHONE = '03044595469';
+
+async function ensureServiceCities() {
+  for (const city of SERVICE_CITIES) {
+    await prisma.serviceCity.upsert({
+      where: { slug: city.slug },
+      create: {
+        name: city.name,
+        slug: city.slug,
+        isActive: true,
+      },
+      update: {
+        name: city.name,
+        isActive: true,
+      },
+    });
+  }
+}
 
 async function ensureServiceCategories() {
   for (const category of SERVICE_CATEGORIES) {
@@ -20,12 +39,48 @@ async function ensureServiceCategories() {
         description: category.description,
         keywords: category.keywords ?? [],
         isActive: true,
+        parentId: null,
       },
       update: {
         name: category.name,
         description: category.description,
         keywords: category.keywords ?? [],
         isActive: true,
+        parentId: null,
+      },
+    });
+  }
+
+  const roots = await prisma.serviceCategory.findMany({
+    where: { parentId: null },
+    select: { id: true, slug: true },
+  });
+  const rootIdBySlug = new Map(roots.map((root) => [root.slug, root.id]));
+
+  for (const sub of SERVICE_SUBCATEGORIES) {
+    const parentId = rootIdBySlug.get(sub.parentSlug);
+    if (!parentId) {
+      throw new Error(
+        `Missing parent category for subcategory "${sub.slug}" (parent "${sub.parentSlug}").`,
+      );
+    }
+
+    await prisma.serviceCategory.upsert({
+      where: { slug: sub.slug },
+      create: {
+        name: sub.name,
+        slug: sub.slug,
+        description: sub.description,
+        keywords: sub.keywords ?? [],
+        isActive: true,
+        parentId,
+      },
+      update: {
+        name: sub.name,
+        description: sub.description,
+        keywords: sub.keywords ?? [],
+        isActive: true,
+        parentId,
       },
     });
   }
@@ -186,12 +241,21 @@ async function seedDemoProviderServices() {
     categories.map((category) => [category.slug, category.id]),
   );
 
+  const cities = await prisma.serviceCity.findMany({
+    select: { id: true, slug: true },
+  });
+  const cityIdBySlug = new Map(cities.map((city) => [city.slug, city.id]));
+
   for (const item of DEMO_PROVIDER_SERVICES) {
     const categoryId = categoryIdBySlug.get(item.categorySlug);
     if (!categoryId) {
       throw new Error(
         `Missing service category for slug "${item.categorySlug}".`,
       );
+    }
+    const cityId = cityIdBySlug.get(item.citySlug);
+    if (!cityId) {
+      throw new Error(`Missing service city for slug "${item.citySlug}".`);
     }
 
     const existing = await prisma.service.findFirst({
@@ -206,6 +270,7 @@ async function seedDemoProviderServices() {
         where: { id: existing.id },
         data: {
           categoryId,
+          cityId,
           description: item.description,
           imageUrl: item.imageUrl,
           address: item.address,
@@ -225,6 +290,7 @@ async function seedDemoProviderServices() {
       data: {
         providerId: provider.id,
         categoryId,
+        cityId,
         title: item.title,
         description: item.description,
         imageUrl: item.imageUrl,
@@ -243,13 +309,14 @@ async function seedDemoProviderServices() {
 
 async function main() {
   await ensureRoles();
+  await ensureServiceCities();
   await ensureServiceCategories();
   await upsertAdmin();
   await upsertSeeker();
   await upsertProvider();
   await seedDemoProviderServices();
   console.log(
-    'Seeded roles, service categories, phone-based demo accounts, and provider services.',
+    'Seeded roles, cities, categories/subcategories, demo accounts, and provider services.',
   );
 }
 
