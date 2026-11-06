@@ -79,19 +79,21 @@ export class MessagesGateway implements OnGatewayConnection {
     seeker?: { id: string; dto: MessageThreadDto };
     admin?: { id: string; dto: MessageThreadDto };
   }) {
-    this.server
-      .to(this.userRoom('provider', payload.provider.id))
-      .emit('thread:upserted', payload.provider.dto);
-    if (payload.seeker) {
+    this.safeEmit('thread:upserted', () => {
       this.server
-        .to(this.userRoom('seeker', payload.seeker.id))
-        .emit('thread:upserted', payload.seeker.dto);
-    }
-    if (payload.admin) {
-      this.server
-        .to(this.userRoom('admin', payload.admin.id))
-        .emit('thread:upserted', payload.admin.dto);
-    }
+        .to(this.userRoom('provider', payload.provider.id))
+        .emit('thread:upserted', payload.provider.dto);
+      if (payload.seeker) {
+        this.server
+          .to(this.userRoom('seeker', payload.seeker.id))
+          .emit('thread:upserted', payload.seeker.dto);
+      }
+      if (payload.admin) {
+        this.server
+          .to(this.userRoom('admin', payload.admin.id))
+          .emit('thread:upserted', payload.admin.dto);
+      }
+    });
   }
 
   emitThreadRead(payload: {
@@ -102,21 +104,23 @@ export class MessagesGateway implements OnGatewayConnection {
     seekerId?: string | null;
     adminId?: string | null;
   }) {
-    if (payload.providerId) {
-      this.server
-        .to(this.userRoom('provider', payload.providerId))
-        .emit('thread:read', payload);
-    }
-    if (payload.seekerId) {
-      this.server
-        .to(this.userRoom('seeker', payload.seekerId))
-        .emit('thread:read', payload);
-    }
-    if (payload.adminId) {
-      this.server
-        .to(this.userRoom('admin', payload.adminId))
-        .emit('thread:read', payload);
-    }
+    this.safeEmit('thread:read', () => {
+      if (payload.providerId) {
+        this.server
+          .to(this.userRoom('provider', payload.providerId))
+          .emit('thread:read', payload);
+      }
+      if (payload.seekerId) {
+        this.server
+          .to(this.userRoom('seeker', payload.seekerId))
+          .emit('thread:read', payload);
+      }
+      if (payload.adminId) {
+        this.server
+          .to(this.userRoom('admin', payload.adminId))
+          .emit('thread:read', payload);
+      }
+    });
   }
 
   @SubscribeMessage('joinUser')
@@ -200,21 +204,23 @@ export class MessagesGateway implements OnGatewayConnection {
     };
 
     // Notify peers only (not the typer).
-    if (actor.role !== 'provider') {
-      this.server
-        .to(this.userRoom('provider', thread.providerId))
-        .emit('typing:update', payload);
-    }
-    if (thread.seekerId && actor.role !== 'seeker') {
-      this.server
-        .to(this.userRoom('seeker', thread.seekerId))
-        .emit('typing:update', payload);
-    }
-    if (thread.adminId && actor.role !== 'admin') {
-      this.server
-        .to(this.userRoom('admin', thread.adminId))
-        .emit('typing:update', payload);
-    }
+    this.safeEmit('typing:update', () => {
+      if (actor.role !== 'provider') {
+        this.server
+          .to(this.userRoom('provider', thread.providerId))
+          .emit('typing:update', payload);
+      }
+      if (thread.seekerId && actor.role !== 'seeker') {
+        this.server
+          .to(this.userRoom('seeker', thread.seekerId))
+          .emit('typing:update', payload);
+      }
+      if (thread.adminId && actor.role !== 'admin') {
+        this.server
+          .to(this.userRoom('admin', thread.adminId))
+          .emit('typing:update', payload);
+      }
+    });
 
     return { ok: true };
   }
@@ -227,18 +233,40 @@ export class MessagesGateway implements OnGatewayConnection {
     event: string,
     payload: unknown,
   ) {
-    this.server
-      .to(this.userRoom('provider', thread.providerId))
-      .emit(event, payload);
-    if (thread.seekerId) {
+    this.safeEmit(event, () => {
       this.server
-        .to(this.userRoom('seeker', thread.seekerId))
+        .to(this.userRoom('provider', thread.providerId))
         .emit(event, payload);
+      if (thread.seekerId) {
+        this.server
+          .to(this.userRoom('seeker', thread.seekerId))
+          .emit(event, payload);
+      }
+      if (thread.adminId) {
+        this.server
+          .to(this.userRoom('admin', thread.adminId))
+          .emit(event, payload);
+      }
+    });
+  }
+
+  /**
+   * Same as bidding gateway: HTTP success must not depend on Socket.IO being
+   * available (local long-lived process vs Vercel serverless).
+   */
+  private safeEmit(event: string, emit: () => void) {
+    if (!this.server) {
+      this.logger.warn(
+        `Skipping ${event}: Socket.IO server is not initialized.`,
+      );
+      return;
     }
-    if (thread.adminId) {
-      this.server
-        .to(this.userRoom('admin', thread.adminId))
-        .emit(event, payload);
+    try {
+      emit();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown emit error';
+      this.logger.warn(`Skipping ${event}: ${message}`);
     }
   }
 

@@ -89,10 +89,12 @@ export class BiddingGateway implements OnGatewayConnection {
     bid: BiddingResponse,
     seekerId?: string,
   ) {
-    this.server.to(this.jobRoom(jobId)).emit('bid:created', bid);
-    if (seekerId) {
-      this.server.to(this.seekerRoom(seekerId)).emit('bid:created', bid);
-    }
+    this.safeEmit('bid:created', () => {
+      this.server.to(this.jobRoom(jobId)).emit('bid:created', bid);
+      if (seekerId) {
+        this.server.to(this.seekerRoom(seekerId)).emit('bid:created', bid);
+      }
+    });
   }
 
   /** Provider spent a token — both sides can now see contact details. */
@@ -104,26 +106,34 @@ export class BiddingGateway implements OnGatewayConnection {
       seekerPhone: string | null;
     },
   ) {
-    this.server
-      .to(this.seekerRoom(seekerId))
-      .emit('booking:contactUnlocked', payload);
+    this.safeEmit('booking:contactUnlocked', () => {
+      this.server
+        .to(this.seekerRoom(seekerId))
+        .emit('booking:contactUnlocked', payload);
+    });
   }
 
   emitBidsUpdated(jobId: string, bids: BiddingResponse[]) {
-    this.server.to(this.jobRoom(jobId)).emit('bids:updated', bids);
+    this.safeEmit('bids:updated', () => {
+      this.server.to(this.jobRoom(jobId)).emit('bids:updated', bids);
+    });
   }
 
   emitBidAccepted(providerId: string, payload: BidAcceptedPayload) {
-    this.server
-      .to(this.providerRoom(providerId))
-      .emit('bid:accepted', payload);
+    this.safeEmit('bid:accepted', () => {
+      this.server
+        .to(this.providerRoom(providerId))
+        .emit('bid:accepted', payload);
+    });
   }
 
   /** Instant booking request for the owning provider. */
   emitBookingCreated(providerId: string, payload: BookingCreatedPayload) {
-    this.server
-      .to(this.providerRoom(providerId))
-      .emit('booking:created', payload);
+    this.safeEmit('booking:created', () => {
+      this.server
+        .to(this.providerRoom(providerId))
+        .emit('booking:created', payload);
+    });
   }
 
   /**
@@ -134,12 +144,16 @@ export class BiddingGateway implements OnGatewayConnection {
     matches: Array<{ providerId: string; matchKind: 'exact' | 'also_relevant' }>,
     payload: { job: JobResponse },
   ) {
-    for (const match of matches) {
-      this.server.to(this.providerRoom(match.providerId)).emit('job:created', {
-        job: payload.job,
-        matchKind: match.matchKind,
-      } satisfies JobCreatedPayload);
-    }
+    this.safeEmit('job:created', () => {
+      for (const match of matches) {
+        this.server
+          .to(this.providerRoom(match.providerId))
+          .emit('job:created', {
+            job: payload.job,
+            matchKind: match.matchKind,
+          } satisfies JobCreatedPayload);
+      }
+    });
   }
 
   /** Seeker withdrew a request — remove it from the provider’s list instantly. */
@@ -147,9 +161,32 @@ export class BiddingGateway implements OnGatewayConnection {
     providerId: string,
     payload: BookingWithdrawnPayload,
   ) {
-    this.server
-      .to(this.providerRoom(providerId))
-      .emit('booking:withdrawn', payload);
+    this.safeEmit('booking:withdrawn', () => {
+      this.server
+        .to(this.providerRoom(providerId))
+        .emit('booking:withdrawn', payload);
+    });
+  }
+
+  /**
+   * Socket.IO is reliable on a long-lived Nest process (local), but on Vercel
+   * Fluid/serverless the WS server may be unset or not fully attached. Never
+   * let a realtime fan-out turn a successful HTTP write into a 500.
+   */
+  private safeEmit(event: string, emit: () => void) {
+    if (!this.server) {
+      this.logger.warn(
+        `Skipping ${event}: Socket.IO server is not initialized.`,
+      );
+      return;
+    }
+    try {
+      emit();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown emit error';
+      this.logger.warn(`Skipping ${event}: ${message}`);
+    }
   }
 
   @SubscribeMessage('joinJob')
