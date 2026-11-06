@@ -95,6 +95,20 @@ export class BiddingGateway implements OnGatewayConnection {
     }
   }
 
+  /** Provider spent a token — both sides can now see contact details. */
+  emitBookingContactUnlocked(
+    seekerId: string,
+    payload: {
+      bookingId: string;
+      providerPhone: string | null;
+      seekerPhone: string | null;
+    },
+  ) {
+    this.server
+      .to(this.seekerRoom(seekerId))
+      .emit('booking:contactUnlocked', payload);
+  }
+
   emitBidsUpdated(jobId: string, bids: BiddingResponse[]) {
     this.server.to(this.jobRoom(jobId)).emit('bids:updated', bids);
   }

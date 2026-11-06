@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
+  forwardRef,
 } from '@nestjs/common';
 import {
   ContactUnlockTargetType,
@@ -13,6 +15,7 @@ import {
 } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { BiddingGateway } from '../bidding/bidding.gateway.js';
 import { JobMatchingService } from '../jobs/job-matching.service.js';
 import {
   MONTHLY_TOKEN_GRANT,
@@ -42,6 +45,8 @@ export class TokensService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jobMatching: JobMatchingService,
+    @Inject(forwardRef(() => BiddingGateway))
+    private readonly biddingGateway: BiddingGateway,
   ) {}
 
   async getMyBalance(user: JwtPayload): Promise<TokenBalanceResponse> {
@@ -81,14 +86,16 @@ export class TokensService {
     });
     if (existing) {
       const wallet = await this.ensureMonthlyGrant(provider.id);
-      return {
-        unlocked: true,
+      const response = {
+        unlocked: true as const,
         alreadyUnlocked: true,
         targetType,
         targetId,
         balance: wallet.balance,
         tokensSpent: 0,
       };
+      await this.notifySeekerIfBookingUnlock(targetType, targetId);
+      return response;
     }
 
     await this.ensureMonthlyGrant(provider.id);
@@ -133,14 +140,16 @@ export class TokensService {
         return updated;
       });
 
-      return {
-        unlocked: true,
+      const response = {
+        unlocked: true as const,
         alreadyUnlocked: false,
         targetType,
         targetId,
         balance: result.balance,
         tokensSpent: UNLOCK_TOKEN_COST,
       };
+      await this.notifySeekerIfBookingUnlock(targetType, targetId);
+      return response;
     } catch (error) {
       if (
         typeof error === 'object' &&
@@ -149,17 +158,39 @@ export class TokensService {
         (error as { code?: string }).code === 'P2002'
       ) {
         const wallet = await this.ensureMonthlyGrant(provider.id);
-        return {
-          unlocked: true,
+        const response = {
+          unlocked: true as const,
           alreadyUnlocked: true,
           targetType,
           targetId,
           balance: wallet.balance,
           tokensSpent: 0,
         };
+        await this.notifySeekerIfBookingUnlock(targetType, targetId);
+        return response;
       }
       throw error;
     }
+  }
+
+  private async notifySeekerIfBookingUnlock(
+    targetType: ContactUnlockTargetType,
+    targetId: string,
+  ) {
+    if (targetType !== ContactUnlockTargetType.BOOKING) return;
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: targetId },
+      include: {
+        seeker: true,
+        provider: { include: { user: true } },
+      },
+    });
+    if (!booking) return;
+    this.biddingGateway.emitBookingContactUnlocked(booking.seekerId, {
+      bookingId: booking.id,
+      providerPhone: booking.provider.user.phone,
+      seekerPhone: booking.seeker.phone,
+    });
   }
 
   async hasUnlock(

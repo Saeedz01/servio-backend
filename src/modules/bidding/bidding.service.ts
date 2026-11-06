@@ -221,7 +221,10 @@ export class BiddingService {
           note: noteParts.join(' '),
           status: BookingStatus.ACCEPTED,
         },
-        include: { seeker: true },
+        include: {
+          seeker: true,
+          provider: { include: { user: true } },
+        },
       });
 
       await this.tokensService.inheritJobUnlockToBooking(
@@ -411,6 +414,7 @@ export class BiddingService {
       createdAt: Date;
       updatedAt: Date;
       seeker: User;
+      provider: { user: User };
     },
     contactUnlocked: boolean,
   ): BookingResponse {
@@ -419,6 +423,8 @@ export class BiddingService {
       serviceId: booking.serviceId,
       providerId: booking.providerId,
       serviceTitle: booking.serviceTitle,
+      providerName: booking.provider.user.name,
+      providerPhone: contactUnlocked ? booking.provider.user.phone : null,
       seekerId: booking.seekerId,
       seekerName: booking.seeker.name,
       seekerPhone: contactUnlocked ? booking.seeker.phone : null,

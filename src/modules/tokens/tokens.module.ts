@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { BiddingModule } from '../bidding/bidding.module.js';
 import { JobMatchingModule } from '../jobs/job-matching.module.js';
 import { TokensController } from './tokens.controller.js';
 import { TokensService } from './tokens.service.js';
@@ -8,6 +9,7 @@ import { TokensService } from './tokens.service.js';
 @Module({
   imports: [
     JobMatchingModule,
+    forwardRef(() => BiddingModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

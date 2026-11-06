@@ -10,6 +10,7 @@ import {
   ContactUnlockTargetType,
   ServiceStatus,
   type Booking,
+  type Provider,
   type User,
 } from '@prisma/client';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator.js';
@@ -23,6 +24,8 @@ export type BookingResponse = {
   serviceId: string;
   providerId: string;
   serviceTitle: string;
+  providerName: string;
+  providerPhone: string | null;
   seekerId: string;
   seekerName: string;
   seekerPhone: string | null;
@@ -38,7 +41,15 @@ export type BookingResponse = {
   updatedAt: string;
 };
 
-type BookingWithSeeker = Booking & { seeker: User };
+type BookingWithRelations = Booking & {
+  seeker: User;
+  provider: Provider & { user: User };
+};
+
+const bookingInclude = {
+  seeker: true,
+  provider: { include: { user: true } },
+} as const;
 
 @Injectable()
 export class BookingsService {
@@ -92,7 +103,7 @@ export class BookingsService {
           note: dto.note?.trim() ?? '',
           status: BookingStatus.PENDING,
         },
-        include: { seeker: true },
+        include: bookingInclude,
       });
 
       const seekerName = seeker.name.trim() || 'A seeker';
@@ -109,7 +120,7 @@ export class BookingsService {
       return { booking, notification };
     });
 
-    const seekerResponse = this.toResponse(result.booking, true);
+    const seekerResponse = this.toResponse(result.booking, false);
     const providerResponse = this.toResponse(result.booking, false);
     this.biddingGateway.emitBookingCreated(service.providerId, {
       booking: providerResponse,
@@ -131,17 +142,20 @@ export class BookingsService {
   async findMineAsSeeker(userId: string): Promise<BookingResponse[]> {
     const rows = await this.prisma.booking.findMany({
       where: { seekerId: userId },
-      include: { seeker: true },
+      include: bookingInclude,
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row) => this.toResponse(row, true));
+    const unlockedIds = await this.unlockedBookingIds(rows);
+    return rows.map((row) =>
+      this.toResponse(row, unlockedIds.has(row.id)),
+    );
   }
 
   async findMineAsProvider(userId: string): Promise<BookingResponse[]> {
     const provider = await this.requireProvider(userId);
     const rows = await this.prisma.booking.findMany({
       where: { providerId: provider.id },
-      include: { seeker: true },
+      include: bookingInclude,
       orderBy: { createdAt: 'desc' },
     });
     const unlocked = await this.tokensService.unlockedTargetIds(
@@ -209,7 +223,7 @@ export class BookingsService {
   async findOne(id: string, user: JwtPayload): Promise<BookingResponse> {
     const booking = await this.prisma.booking.findUnique({
       where: { id },
-      include: { seeker: true },
+      include: bookingInclude,
     });
     if (!booking) {
       throw new NotFoundException('Booking not found.');
@@ -221,7 +235,7 @@ export class BookingsService {
       row = await this.prisma.booking.update({
         where: { id: booking.id },
         data: { providerViewedAt: new Date() },
-        include: { seeker: true },
+        include: bookingInclude,
       });
       await this.prisma.notification.updateMany({
         where: {
@@ -303,7 +317,7 @@ export class BookingsService {
     const provider = await this.requireProvider(userId);
     const existing = await this.prisma.booking.findUnique({
       where: { id },
-      include: { seeker: true },
+      include: bookingInclude,
     });
     if (!existing) {
       throw new NotFoundException('Booking not found.');
@@ -315,7 +329,7 @@ export class BookingsService {
     if (status === BookingStatus.COMPLETED) {
       if (existing.status !== BookingStatus.ACCEPTED) {
         throw new BadRequestException(
-          'Only booked bookings can be marked completed.',
+          'Only confirmed bookings can be marked completed.',
         );
       }
     } else if (
@@ -330,7 +344,7 @@ export class BookingsService {
     const booking = await this.prisma.booking.update({
       where: { id },
       data: { status },
-      include: { seeker: true },
+      include: bookingInclude,
     });
     const unlocked = await this.tokensService.hasUnlock(
       provider.id,
@@ -340,19 +354,52 @@ export class BookingsService {
     return this.toResponse(booking, unlocked);
   }
 
+  /**
+   * Contact (seeker + provider phones) is shared only after the booking’s
+   * provider spends a token to unlock that specific request.
+   */
   private async resolveContactUnlocked(
     booking: Booking,
     user: JwtPayload,
   ): Promise<boolean> {
-    if (user.role !== 'PROVIDER') {
-      return true;
+    if (user.role === 'PROVIDER') {
+      const provider = await this.requireProvider(user.sub);
+      return this.tokensService.hasUnlock(
+        provider.id,
+        ContactUnlockTargetType.BOOKING,
+        booking.id,
+      );
     }
-    const provider = await this.requireProvider(user.sub);
-    return this.tokensService.hasUnlock(
-      provider.id,
-      ContactUnlockTargetType.BOOKING,
-      booking.id,
-    );
+    if (user.role === 'SEEKER') {
+      return this.tokensService.hasUnlock(
+        booking.providerId,
+        ContactUnlockTargetType.BOOKING,
+        booking.id,
+      );
+    }
+    return false;
+  }
+
+  private async unlockedBookingIds(
+    rows: Array<{ id: string; providerId: string }>,
+  ): Promise<Set<string>> {
+    if (rows.length === 0) return new Set();
+    const byProvider = new Map<string, string[]>();
+    for (const row of rows) {
+      const list = byProvider.get(row.providerId) ?? [];
+      list.push(row.id);
+      byProvider.set(row.providerId, list);
+    }
+    const unlocked = new Set<string>();
+    for (const [providerId, ids] of byProvider) {
+      const set = await this.tokensService.unlockedTargetIds(
+        providerId,
+        ContactUnlockTargetType.BOOKING,
+        ids,
+      );
+      for (const id of set) unlocked.add(id);
+    }
+    return unlocked;
   }
 
   private async assertCanView(booking: Booking, user: JwtPayload) {
@@ -383,7 +430,7 @@ export class BookingsService {
   }
 
   private toResponse(
-    booking: BookingWithSeeker,
+    booking: BookingWithRelations,
     contactUnlocked: boolean,
   ): BookingResponse {
     return {
@@ -391,6 +438,8 @@ export class BookingsService {
       serviceId: booking.serviceId,
       providerId: booking.providerId,
       serviceTitle: booking.serviceTitle,
+      providerName: booking.provider.user.name,
+      providerPhone: contactUnlocked ? booking.provider.user.phone : null,
       seekerId: booking.seekerId,
       seekerName: booking.seeker.name,
       seekerPhone: contactUnlocked ? booking.seeker.phone : null,
