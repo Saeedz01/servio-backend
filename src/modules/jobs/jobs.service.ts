@@ -36,6 +36,7 @@ export type JobResponse = {
   lng: number;
   requestedAt: string;
   status: 'open' | 'awarded' | 'closed';
+  bidCount: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -48,6 +49,7 @@ export type ProviderJobFeedResponse = {
 type JobWithRelations = Job & {
   seeker: User;
   category: ServiceCategory;
+  _count: { biddings: number };
 };
 
 @Injectable()
@@ -104,7 +106,11 @@ export class JobsService {
         requestedAt,
         status: JobStatus.OPEN,
       },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
     });
 
     const seekerResponse = this.toResponse(job, true);
@@ -129,7 +135,11 @@ export class JobsService {
   async findMineAsSeeker(userId: string): Promise<JobResponse[]> {
     const rows = await this.prisma.job.findMany({
       where: { seekerId: userId },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return rows.map((row) => this.toResponse(row, true));
@@ -152,7 +162,11 @@ export class JobsService {
     const allIds = [...matchedIds, ...alsoRelevantIds];
     const rows = await this.prisma.job.findMany({
       where: { id: { in: allIds } },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
     const unlocked = await this.tokensService.unlockedTargetIds(
@@ -162,10 +176,10 @@ export class JobsService {
     );
 
     const mapIds = (ids: string[]) =>
-      ids
-        .map((id) => byId.get(id))
-        .filter((row): row is JobWithRelations => Boolean(row))
-        .map((row) => this.toResponse(row, unlocked.has(row.id)));
+      ids.flatMap((id) => {
+        const row = byId.get(id);
+        return row ? [this.toResponse(row, unlocked.has(row.id))] : [];
+      });
 
     return {
       matched: mapIds(matchedIds),
@@ -176,7 +190,11 @@ export class JobsService {
   async findOne(id: string, user: JwtPayload): Promise<JobResponse> {
     const job = await this.prisma.job.findUnique({
       where: { id },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
     });
     if (!job) {
       throw new NotFoundException('Job not found.');
@@ -199,7 +217,11 @@ export class JobsService {
   async close(id: string, userId: string): Promise<JobResponse> {
     const existing = await this.prisma.job.findUnique({
       where: { id },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
     });
     if (!existing) {
       throw new NotFoundException('Job not found.');
@@ -214,7 +236,11 @@ export class JobsService {
     const job = await this.prisma.job.update({
       where: { id },
       data: { status: JobStatus.CLOSED },
-      include: { seeker: true, category: true },
+      include: {
+        seeker: true,
+        category: true,
+        _count: { select: { biddings: true } },
+      },
     });
     return this.toResponse(job, true);
   }
@@ -302,6 +328,7 @@ export class JobsService {
       lng: job.lng,
       requestedAt: job.requestedAt.toISOString(),
       status: this.mapStatus(job.status),
+      bidCount: job._count.biddings,
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString(),
     };

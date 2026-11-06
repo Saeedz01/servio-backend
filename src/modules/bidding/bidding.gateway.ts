@@ -84,8 +84,15 @@ export class BiddingGateway implements OnGatewayConnection {
     this.logger.debug(`Bidding socket connected: ${client.id}`);
   }
 
-  emitBidCreated(jobId: string, bid: BiddingResponse) {
+  emitBidCreated(
+    jobId: string,
+    bid: BiddingResponse,
+    seekerId?: string,
+  ) {
     this.server.to(this.jobRoom(jobId)).emit('bid:created', bid);
+    if (seekerId) {
+      this.server.to(this.seekerRoom(seekerId)).emit('bid:created', bid);
+    }
   }
 
   emitBidsUpdated(jobId: string, bids: BiddingResponse[]) {
@@ -210,6 +217,58 @@ export class BiddingGateway implements OnGatewayConnection {
     }
   }
 
+  /**
+   * Seeker joins a private room so bid counts / bid lists update without
+   * watching each job page individually.
+   */
+  @SubscribeMessage('joinSeeker')
+  async handleJoinSeeker(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: JoinProviderPayload,
+  ) {
+    const token = body.token?.trim();
+    if (!token) {
+      return { ok: false, error: 'token is required.' };
+    }
+
+    try {
+      const payload = this.jwt.verify<JwtPayload>(token, {
+        secret: this.config.getOrThrow<string>('JWT_SECRET'),
+      });
+      if (payload.role !== 'SEEKER') {
+        return { ok: false, error: 'Only seekers can join this room.' };
+      }
+      await client.join(this.seekerRoom(payload.sub));
+      client.data.seekerId = payload.sub;
+      return { ok: true, seekerId: payload.sub };
+    } catch {
+      return { ok: false, error: 'Invalid token.' };
+    }
+  }
+
+  @SubscribeMessage('leaveSeeker')
+  async handleLeaveSeeker(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: JoinProviderPayload,
+  ) {
+    const token = body.token?.trim();
+    if (!token) {
+      return { ok: false, error: 'token is required.' };
+    }
+    try {
+      const payload = this.jwt.verify<JwtPayload>(token, {
+        secret: this.config.getOrThrow<string>('JWT_SECRET'),
+      });
+      if (payload.role === 'SEEKER') {
+        await client.leave(this.seekerRoom(payload.sub));
+        client.data.seekerId = undefined;
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Invalid token.' };
+    }
+  }
+
   @SubscribeMessage('leaveProvider')
   async handleLeaveProvider(
     @ConnectedSocket() client: Socket,
@@ -246,6 +305,10 @@ export class BiddingGateway implements OnGatewayConnection {
 
   private jobRoom(jobId: string) {
     return `job:${jobId}`;
+  }
+
+  private seekerRoom(seekerId: string) {
+    return `seeker:${seekerId}`;
   }
 
   private providerRoom(providerId: string) {

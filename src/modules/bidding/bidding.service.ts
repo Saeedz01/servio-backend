@@ -124,7 +124,7 @@ export class BiddingService {
     });
 
     const response = this.toResponse(bid);
-    this.biddingGateway.emitBidCreated(job.id, response);
+    this.biddingGateway.emitBidCreated(job.id, response, job.seekerId);
     return response;
   }
 
